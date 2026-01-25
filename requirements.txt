@@ -1,0 +1,19 @@
+# --- Núcleo Matemático y de Datos ---
+numpy>=1.21.0
+scipy
+scikit-learn       # Vital para el algoritmo de partición (Clustering)
+pandas             # Útil para leer logs o CSVs
+
+# --- Procesamiento de Imágenes ---
+opencv-python      # Carga rápida de imágenes
+Pillow             # Manipulación básica de imágenes
+
+# --- Utilidades del Proyecto ---
+pyyaml             # Para leer configuraciones
+tqdm               # Barras de progreso
+termcolor          # Colores en la terminal
+matplotlib         # Para graficar resultados de similitud
+packaging          # Manejo de versiones
+
+# --- Modelos Base ---
+timm>=0.4.12       # Necesario aunque usemos 'third_package' como base

@@ -22,3 +22,5 @@ mis_similitudes/
 !.gitignore
 !.blocklize/
 0.4.12
+network_plan.pkl
+

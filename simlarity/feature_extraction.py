@@ -727,7 +727,12 @@ def create_sub_network(
         graph_module.recompile()
         # Remove old placeholder (input node)
         for n in orig_input_nodes:
-            graph_module.graph.erase_node(n)
+                        # CÓDIGO NUEVO (CORREGIDO)
+            if len(n.users) == 0:
+                graph_module.graph.erase_node(n)
+            else:
+                # Si el nodo todavía tiene usuarios (como conv_stem usando x), lo dejamos vivir.
+                pass
         
         graph_module.graph.eliminate_dead_code()
         graph_module.recompile()
