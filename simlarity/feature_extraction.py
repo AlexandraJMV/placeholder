@@ -13,7 +13,6 @@ from tabulate import tabulate
 from torch import fx, nn
 from torch.fx.graph_module import _copy_attr
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-
 from blocklize.block_meta import MODEL_BLOCKS
 
 __all__ = ["create_feature_extractor", "get_graph_node_names"]
@@ -727,12 +726,7 @@ def create_sub_network(
         graph_module.recompile()
         # Remove old placeholder (input node)
         for n in orig_input_nodes:
-                        # CÓDIGO NUEVO (CORREGIDO)
-            if len(n.users) == 0:
-                graph_module.graph.erase_node(n)
-            else:
-                # Si el nodo todavía tiene usuarios (como conv_stem usando x), lo dejamos vivir.
-                pass
+            graph_module.graph.erase_node(n)
         
         graph_module.graph.eliminate_dead_code()
         graph_module.recompile()

@@ -4,12 +4,9 @@ import pickle
 import argparse
 import numpy as np
 
-# --- SETUP DE RUTAS (CRÍTICO) ---
-# Forzamos a Python a ver los paquetes locales igual que partition.py
 sys.path.insert(0, os.path.join(os.getcwd(), 'third_package'))
 sys.path.append(os.getcwd())
 
-# Importamos la "Verdad" según el código
 try:
     from blocklize import MODEL_BLOCKS, MODEL_ZOO
 except ImportError:
@@ -24,7 +21,6 @@ def check_alignment(sim_path):
     issues_found = False
     
     for model_name in MODEL_ZOO:
-        # 1. Verificar Metadata
         if model_name not in MODEL_BLOCKS:
             print(f"{model_name:<30} | {'MISSING':<15} | {'---':<15} | ❌ ERROR (No en MODEL_BLOCKS)")
             issues_found = True
@@ -32,21 +28,17 @@ def check_alignment(sim_path):
             
         expected_n = len(MODEL_BLOCKS[model_name])
         
-        # 2. Verificar Datos (Matriz)
-        # Buscamos el archivo de auto-similitud (ej: resnet18.resnet18.pkl)
         pkl_name = f"{model_name}.{model_name}.pkl"
         pkl_path = os.path.join(sim_path, pkl_name)
         
         if not os.path.exists(pkl_path):
             print(f"{model_name:<30} | {expected_n:<15} | {'NOT FOUND':<15} | ⚠️  WARNING (Falta archivo .pkl)")
-            # No marcamos error fatal si falta el archivo, pero sí avisamos
             continue
             
         try:
             with open(pkl_path, 'rb') as f:
                 data = pickle.load(f)
             
-            # La matriz suele estar bajo la llave 'sim'
             if 'sim' not in data:
                  print(f"{model_name:<30} | {expected_n:<15} | {'INVALID':<15} | ❌ ERROR (PKL corrupto)")
                  issues_found = True
@@ -55,7 +47,6 @@ def check_alignment(sim_path):
             sim_matrix = data['sim']
             matrix_n = sim_matrix.shape[0]
             
-            # 3. Comparación
             if matrix_n != expected_n:
                 status = "❌ MISMATCH"
                 issues_found = True

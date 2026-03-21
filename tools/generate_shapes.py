@@ -4,12 +4,10 @@ import json
 import torch
 import torch.nn as nn
 
-# --- SETUP DE RUTAS ---
 sys.path.insert(0, os.path.join(os.getcwd(), 'third_package'))
 sys.path.append(os.getcwd())
 
 try:
-    # IMPORTAMOS LA ÚNICA FUENTE DE LA VERDAD
     from blocklize import MODEL_BLOCKS, MODEL_ZOO
 except ImportError:
     print("❌ Error Fatal: Ejecuta desde la raíz del proyecto.")
@@ -17,7 +15,6 @@ except ImportError:
 
 def load_base_model(model_name):
     """Carga el modelo base adecuado (Torchvision o Timm)"""
-    # Lista explícita de modelos soportados por torchvision en tu repo
     torchvision_models = ['resnet18', 'squeezenet1_1', 'densenet', 'shufflenet_v2_x0_5']
     
     if any(x in model_name for x in torchvision_models):
@@ -27,13 +24,11 @@ def load_base_model(model_name):
         except:
             return getattr(models, model_name)(pretrained=True)
     else:
-        # Todo lo demás va por TIMM (MobileNet, EfficientNet, etc.)
         import timm
         return timm.create_model(model_name, pretrained=True)
 
 def get_module_by_name(model, name):
     """Busca un sub-módulo dentro del modelo usando su nombre de string (ej: 'layer1.0')"""
-    # Generamos un diccionario plano de todos los módulos
     modules = dict(model.named_modules())
     return modules.get(name, None)
 
@@ -48,7 +43,6 @@ def generate_json(output_path="tools/MODEL_INOUT_SHAPE.json"):
         print(f"MODELO: {model_name}")
         print(f"{'='*40}")
 
-        # 1. Cargar Modelo
         try:
             base_model = load_base_model(model_name)
             base_model.eval()
@@ -56,7 +50,6 @@ def generate_json(output_path="tools/MODEL_INOUT_SHAPE.json"):
             print(f"❌ Fallo crítico cargando modelo: {e}")
             continue
 
-        # 2. Obtener la lista de Nodos Maestros desde blocklize
         target_nodes = MODEL_BLOCKS.get(model_name, [])
         if not target_nodes:
             print("⚠️  SKIPPING: No hay nodos definidos en MODEL_BLOCKS.")
@@ -64,16 +57,13 @@ def generate_json(output_path="tools/MODEL_INOUT_SHAPE.json"):
 
         print(f"📍 Nodos a mapear: {len(target_nodes)}")
 
-        # 3. Preparar Hooks (Espías)
         captured_data = {}
         hooks = []
 
         def make_hook(name):
             def hook(module, input, output):
-                # input es siempre una tupla en PyTorch
                 in_tensor = input[0] if isinstance(input, tuple) else input
                 
-                # output puede ser tensor, tupla, o dict (casos raros)
                 if isinstance(output, tuple):
                     out_tensor = output[0]
                 elif isinstance(output, dict):
@@ -81,7 +71,6 @@ def generate_json(output_path="tools/MODEL_INOUT_SHAPE.json"):
                 else:
                     out_tensor = output
                 
-                # Guardamos [C, H, W] eliminando la dimensión Batch (índice 0)
                 if hasattr(in_tensor, 'shape') and hasattr(out_tensor, 'shape'):
                     captured_data[name] = {
                         'in': list(in_tensor.shape)[1:],
@@ -89,7 +78,6 @@ def generate_json(output_path="tools/MODEL_INOUT_SHAPE.json"):
                     }
             return hook
 
-        # 4. Instalar Hooks en los nodos objetivo
         for node_name in target_nodes:
             module = get_module_by_name(base_model, node_name)
             if module is not None:
@@ -102,7 +90,6 @@ def generate_json(output_path="tools/MODEL_INOUT_SHAPE.json"):
             print("❌ No se pudo registrar ningún hook. Revisa los nombres en blocklize.")
             continue
 
-        # 5. Ejecutar Pass (Imagen Dummy)
         try:
             dummy_input = torch.randn(1, 3, 224, 224)
             with torch.no_grad():
@@ -111,10 +98,8 @@ def generate_json(output_path="tools/MODEL_INOUT_SHAPE.json"):
         except Exception as e:
             print(f"❌ Error durante la ejecución: {e}")
 
-        # 6. Retirar Hooks
         for h in hooks: h.remove()
 
-        # 7. Guardar Resultados Capturados
         model_entry = {"in_size": {}, "out_size": {}}
         success_count = 0
         
@@ -123,14 +108,12 @@ def generate_json(output_path="tools/MODEL_INOUT_SHAPE.json"):
                 model_entry["in_size"][node_name] = captured_data[node_name]['in']
                 model_entry["out_size"][node_name] = captured_data[node_name]['out']
                 success_count += 1
-                # print(f"   🔹 {node_name}: {captured_data[node_name]['in']} -> {captured_data[node_name]['out']}")
             else:
                 print(f"❌ {node_name}: No capturó datos (¿Código muerto o saltado?)")
 
         new_db[model_name] = model_entry
         print(f"📊 Capturados {success_count}/{len(target_nodes)} nodos correctamente.")
 
-    # 8. Escribir JSON
     with open(output_path, 'w') as f:
         json.dump(new_db, f, indent=4)
     print(f"\n💾 ¡Mapeo Finalizado! Archivo guardado en: {output_path}")
