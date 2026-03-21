@@ -15,7 +15,18 @@ import third_package.timm as mytimm
 from blocklize import MODEL_BLOCKS, MODEL_STATS, MODEL_ZOO, MODEL_PRINT
 from blocklize.block_meta import MODEL_INOUT_SHAPE
 # import mmcls <-- REMOVED
+from blocklize.block_meta import MODEL_INOUT_SHAPE as _DEFAULT_SHAPES
 
+# Initialize with default, but allow update
+MODEL_INOUT_SHAPE = _DEFAULT_SHAPES
+
+def update_global_shapes(json_path):
+    """Updates the global MODEL_INOUT_SHAPE with data from a JSON file."""
+    global MODEL_INOUT_SHAPE
+    import json
+    with open(json_path, 'r') as f:
+        MODEL_INOUT_SHAPE = json.load(f)
+    print(f"Global MODEL_INOUT_SHAPE updated from {json_path}")
 
 def create_feature_dict(path):
     result_dict = dict()

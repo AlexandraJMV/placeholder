@@ -2,7 +2,6 @@ import os
 import sys
 import torch
 
-# Hack de rutas para importar config
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import simple_poc.poc_config as cfg
 
@@ -17,17 +16,13 @@ def fix_features():
     
     for filename in files:
         path = os.path.join(cfg.FEAT_DIR, filename)
-        # El nombre del modelo es el nombre del archivo sin .pth
         model_name = os.path.splitext(filename)[0]
         
         try:
-            # 1. Cargar datos
             data = torch.load(path)
             
-            # 2. Inyectar la clave faltante
             if 'model_name' not in data:
                 data['model_name'] = model_name
-                # Guardar de nuevo
                 torch.save(data, path)
                 print(f"   [REPARADO] {filename} -> Se agregó model_name='{model_name}'")
             else:

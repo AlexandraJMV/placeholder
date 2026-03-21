@@ -14,8 +14,6 @@ data/
 mmcls_addon/
 third_package/
 README.md
-mis_features/
-mis_similitudes/
 
 !simlarity/
 !simple_poc/
@@ -23,4 +21,10 @@ mis_similitudes/
 !.blocklize/
 0.4.12
 network_plan.pkl
+mis_features/
+mis_similitudes/
+0
+simple_poc/supernet_checkpoint.pth
+simple_poc/supernet_checkpoint_resume.pth
 
+.DS_Store

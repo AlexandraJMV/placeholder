@@ -15,7 +15,7 @@ from random import sample
 from tqdm import tqdm
 
 # Importaciones relativas
-from .utils import Block, Block_Assign, Block_Sim
+from .utils import Block, Block_Assign, Block_Sim, update_global_shapes
 from blocklize import MODEL_BLOCKS, MODEL_ZOO
 
 def parse_args():
@@ -254,6 +254,9 @@ def print_partition(block_split_dict):
 
 def main():
     args = parse_args()
+    
+    # --- FIX: Inject the correct shapes into utils ---
+    update_global_shapes(args.shape_path)
 
     # 1. Cargar datos
     block_sims = get_all_sim(args)

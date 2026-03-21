@@ -2,11 +2,9 @@ import sys
 import os
 import pickle
 
-# Hack para que Python encuentre tus módulos locales
 sys.path.insert(0, os.path.join(os.getcwd(), 'third_package'))
 sys.path.append(os.getcwd())
 
-# Necesitamos importar la clase Block para que pickle pueda leer el objeto
 from simlarity.utils import Block, Block_Assign
 
 def inspect_plan(pkl_path):
@@ -19,8 +17,6 @@ def inspect_plan(pkl_path):
     with open(pkl_path, 'rb') as f:
         plan = pickle.load(f)
 
-    # El objeto plan tiene un atributo 'center2block' que es una lista de listas
-    # Cada lista interna es una ETAPA (Stage)
     
     stages = plan.center2block
     
@@ -29,7 +25,6 @@ def inspect_plan(pkl_path):
         print(f"   La red puede elegir CUALQUIERA de estos caminos para esta etapa:")
         
         for b in blocks:
-            # b.node_list son los índices de las capas originales
             print(f"    - Modelo: {b.model_name:20} | Bloques Originales: {b.node_list}")
             
         print("-" * 60)
