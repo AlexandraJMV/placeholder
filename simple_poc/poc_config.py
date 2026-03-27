@@ -16,6 +16,8 @@ FEAT_DIR = os.path.join(ROOT_DIR, 'mis_features')
 JSON_OUTPUT_DIR = os.path.join(ROOT_DIR, 'tools')
 JSON_OUTPUT_PATH = os.path.join(JSON_OUTPUT_DIR, 'MODEL_INOUT_SHAPE.json')
 
+# Ruta de tus datos (CIFAR10)
+# DeRy descarga CIFAR automáticamente si usas torchvision, así que definimos donde guardarlo
 DATASET_ROOT = os.path.join(ROOT_DIR, 'data') 
 
 IMG_SIZE = 224          

@@ -724,9 +724,12 @@ def create_sub_network(
         # Remove unused modules / parameters first
         graph_module.graph.eliminate_dead_code()
         graph_module.recompile()
+        
         # Remove old placeholder (input node)
         for n in orig_input_nodes:
-            graph_module.graph.erase_node(n)
+            # Solo borrar si ningún otro nodo depende de él (evita colapsos en Stage 0)
+            if len(n.users) == 0:
+                graph_module.graph.erase_node(n)
         
         graph_module.graph.eliminate_dead_code()
         graph_module.recompile()

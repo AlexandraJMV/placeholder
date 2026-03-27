@@ -1,337 +1,166 @@
-# Copyright (c) OpenMMLab. All rights reserved.
 import argparse
-import math
 import os
-import time
-import warnings
 from pathlib import Path
-from tkinter.messagebox import NO
-
-import mmcv
-import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-from blocklize import MODEL_BLOCKS
-from mmcls.apis import multi_gpu_test, single_gpu_test
-from mmcls.apis.test import collect_results_cpu, collect_results_gpu
-from mmcls.datasets import build_dataloader, build_dataset
-from mmcls.models import build_classifier
-from mmcv import DictAction
-from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
-from mmcv.runner import get_dist_info, init_dist, load_checkpoint
-from timm import models as tm
-from torch import nn
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+import timm
+from tqdm import tqdm
 
-# TODO import `wrap_fp16_model` from mmcv and delete them from mmcls
-try:
-    from mmcv.runner import wrap_fp16_model
-except ImportError:
-    warnings.warn('wrap_fp16_model from mmcls will be deprecated.'
-                  'Please install mmcv>=1.1.4.')
-    from mmcls.core import wrap_fp16_model
+# Importa la definición de MODEL_BLOCKS desde block_meta.py
+from blocklize.block_meta import MODEL_BLOCKS
 
-
+# Define la clase GetFeatureHook para capturar las 
+# características de las capas objetivo durante la inferencia
 class GetFeatureHook:
-    '''
-    Implementation of the forward hook to track feature statistics and compute a loss on them.
-    Will compute mean and variance, and will use l2 as a loss
-    '''
-
     def __init__(self, module):
+        # Registra un hook de avance en el módulo dado
         self.hook = module.register_forward_hook(self.hook_fn)
+        
+        # Inicializa una lista para almacenar las características capturadas, 
+        # así como variables para los tamaños de entrada y salida
         self.feature = []
+        self.in_size = None
+        self.out_size = None
 
     def hook_fn(self, module, input, output):
-        if isinstance(input, tuple):
-            input = input[0]
-        self.in_size = input.shape[1:]
-        self.out_size = output.shape[1:]
-        output = F.adaptive_avg_pool2d(output, (1, 1)).detach().cpu()
-        self.feature.append(output)
+        # Si los tamaños de entrada y salida no se han establecido, 
+        # los obtiene del primer paso del hook
+        if self.in_size is None:
+            self.in_size = input[0].shape[1:] if isinstance(input, tuple) else input.shape[1:]
+            self.out_size = output[0].shape[1:] if isinstance(output, tuple) else output.shape[1:]
 
-    def concat(self):
-        self.feature = torch.cat(self.feature, dim=0)
-
-    def flash_mem(self):
-        del self.feature
-        self.feature = []
-
-    def close(self):
-        self.hook.remove()
-
-
-class GetFeatureHook_transformer(GetFeatureHook):
-    def __init__(self, module):
-        super().__init__(module)
-        print('Transformer Get Feature Hook')
-
-    def hook_fn(self, module, input, output):
-        if isinstance(input, tuple):
-            input = input[0]
-        self.in_size = input.shape[1:]
         if isinstance(output, tuple):
             output = output[0]
-        self.out_size = output.shape[1:]
-        output = F.adaptive_avg_pool1d(
-            output.transpose(1, 2), 1).detach().cpu()
-        self.feature.append(output)
 
-
-class SetFeatureHook:
-    '''
-    Implementation of the forward hook to track feature statistics and compute a loss on them.
-    Will compute mean and variance, and will use l2 as a loss
-    '''
-
-    def __init__(self, module):
-        self.hook = module.register_forward_pre_hook(self.hook_fn)
-
-    def set_feat(self, feat):
-        self.feat = feat
-        self.batch_id = 0
-        self.valid = True
-
-    def hook_fn(self, module, input):
-        # Get the current batch of data
-        if isinstance(input, tuple):
-            input = input[0]
-        bs, out_size, h, w = input.size()
-
-        batch_feat = self.feat.to(input.device)
-        bs, in_size, new_h, new_w = batch_feat.size()
-
-        # if the size mismatch great than 2^3
-        if np.log2(h/new_h) >= 3:
-            new_input = input
-            self.valid = False
+        # Dependiendo de la forma de la salida, aplica un pooling adaptativo 
+        # o un promedio para obtener una representación fija
+        if len(output.shape) == 4:
+            feat = F.adaptive_avg_pool2d(output, (1, 1))
+        elif len(output.shape) == 3:
+            feat = output.mean(dim=1, keepdim=True).transpose(1, 2)
         else:
-            # Create the orthognal transform
+            feat = output
 
-            # transform = torch.zeros((out_size, in_size))
-            # transform.fill_diagonal_(1.0)
+        # Almacena las características capturadas, moviéndolas a la CPU y desconectándolas 
+        # del grafo de cómputo para ahorrar memoria
+        self.feature.append(feat.detach().cpu())
 
-            transform = torch.empty((out_size, in_size))
-            torch.nn.init.orthogonal_(transform)
-            # add two dumpy dimension
-            transform = transform.unsqueeze(-1).unsqueeze(-1).to(input.device)
-
-            new_input = F.conv2d(batch_feat, transform, stride=1, padding=0)
-
-        return new_input
-
+    # Método para concatenar todas las características capturadas en un solo tensor
+    def concat(self):
+        return torch.cat(self.feature, dim=0) if self.feature else torch.tensor([])
+     # Método para eliminar el hook registrado, liberando recursos
     def close(self):
         self.hook.remove()
 
+# Función para cargar el modelo, con manejo de excepciones 
+# para modelos no encontrados en timm
+def get_model(model_name, device):
+    try:
+        # Primero intentamos cargar el modelo desde timm
+        model = timm.create_model(model_name, pretrained=True)
+    except:
+        # Si no se encuentra en timm, intentamos cargarlo desde torchvision
+        import torchvision.models as models
+        model = getattr(models, model_name)(weights='DEFAULT')
+    return model.to(device).eval()
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='mmcls test model')
-    parser.add_argument('config', help='test config file path')
-    parser.add_argument('--checkpoint',  default='', help='checkpoint file')
-    parser.add_argument('--root', default='', help='directory for output result file')
-    out_options = ['class_scores', 'pred_score', 'pred_label', 'pred_class']
-    parser.add_argument(
-        '--out-items',
-        nargs='+',
-        default=['all'],
-        choices=out_options + ['none', 'all'],
-        help='Besides metrics, what items will be included in the output '
-        f'result file. You can choose some of ({", ".join(out_options)}), '
-        'or use "all" to include all above, or use "none" to disable all of '
-        'above. Defaults to output all.',
-        metavar='')
-    parser.add_argument(
-        '--metrics',
-        type=str,
-        nargs='+',
-        help='evaluation metrics, which depends on the dataset, e.g., '
-        '"accuracy", "precision", "recall", "f1_score", "support" for single '
-        'label dataset, and "mAP", "CP", "CR", "CF1", "OP", "OR", "OF1" for '
-        'multi-label dataset')
-    parser.add_argument('--show', action='store_true', help='show results')
-    parser.add_argument(
-        '--show-dir', help='directory where painted images will be saved')
-    parser.add_argument(
-        '--gpu-collect',
-        action='store_true',
-        help='whether to use gpu to collect results')
-    parser.add_argument('--tmpdir', help='tmp dir for writing some results')
-    parser.add_argument(
-        '--cfg-options',
-        nargs='+',
-        action=DictAction,
-        help='override some settings in the used config, the key-value pair '
-        'in xxx=yyy format will be merged into config file. If the value to '
-        'be overwritten is a list, it should be like key="[a,b]" or key=a,b '
-        'It also allows nested list/tuple values, e.g. key="[(a,b),(c,d)]" '
-        'Note that the quotation marks are necessary and that no white space '
-        'is allowed.')
-    parser.add_argument(
-        '--options',
-        nargs='+',
-        action=DictAction,
-        help='override some settings in the used config, the key-value pair '
-        'in xxx=yyy format will be merged into config file (deprecate), '
-        'change to --cfg-options instead.')
-    parser.add_argument(
-        '--metric-options',
-        nargs='+',
-        action=DictAction,
-        default={},
-        help='custom options for evaluation, the key-value pair in xxx=yyy '
-        'format will be parsed as a dict metric_options for dataset.evaluate()'
-        ' function.')
-    parser.add_argument(
-        '--show-options',
-        nargs='+',
-        action=DictAction,
-        help='custom options for show_result. key-value pair in xxx=yyy.'
-        'Check available options in `model.show_result`.')
-    parser.add_argument(
-        '--launcher',
-        choices=['none', 'pytorch', 'slurm', 'mpi'],
-        default='none',
-        help='job launcher')
-    parser.add_argument('--local_rank', type=int, default=0)
-    parser.add_argument(
-        '--device',
-        choices=['cpu', 'cuda'],
-        default='cuda',
-        help='device used for testing')
+# Función para procesar un solo modelo, 
+# encapsulando toda la lógica de extracción y guardado
+def process_single_model(model_name, dataloader, device, args):
+    
+    print(f"\n Procesando modelo: {model_name}")
+    
+    if model_name not in MODEL_BLOCKS:
+        print(f"Saltando {model_name}: No definido en MODEL_BLOCKS")
+        return
+
+    # Carga el modelo
+    model = get_model(model_name, device)
+    
+    # Obtiene las capas objetivo para el modelo actual desde MODEL_BLOCKS
+    target_blocks = MODEL_BLOCKS[model_name]
+    
+    # Diccionario para almacenar los hooks y sus características
+    hooks = {}
+
+    # Configura los hooks para las capas objetivo
+    for name, module in model.named_modules():          # Recorre todas las capas del modelo
+        if name in target_blocks:                       # Si el nombre de la capa está en los bloques objetivo  
+            hooks[name] = GetFeatureHook(module)        # Crea un hook para esa capa y lo almacena en el diccionario
+
+    # Itera sobre el dataloader y pasa las imágenes a través del 
+    # modelo para activar los hooks y capturar las características        
+    with torch.no_grad():
+        for imgs, _ in tqdm(dataloader, desc=f"Inferencia {model_name}"):       # Itera sobre el dataloader con una barra de progreso
+            model(imgs.to(device))                                              # Pasa las imágenes a través del modelo para activar los hooks
+
+    # Después de procesar el dataset, concatena las características capturadas por 
+    # cada hook y las almacena en un diccionario junto con sus tamaños de entrada y salida
+    feat_dict = {}
+    size_dict = {}
+    
+    for block_name, hook in hooks.items():
+        concatenated_features = hook.concat()                                                   # Concatena las características capturadas por el hook
+        feat_dict[block_name] = concatenated_features.view(concatenated_features.size(0), -1)   # Aplana las características a 2D (batch_size, feature_dim)
+        size_dict[block_name] = [list(hook.in_size), list(hook.out_size)]                       # Almacena los tamaños de entrada y salida de la capa en el diccionario size_dict
+        hook.close()                                                                            # Elimina el hook para liberar recursos
+
+    # Guarda los resultados en un archivo .pth, incluyendo el nombre del modelo, los tamaños de las capas y las características extraídas
+    results = {'model_name': model_name, 'size': size_dict, 'feat': feat_dict}
+    output_path = Path(args.save_dir) / f"{model_name}.pth"                         # Define la ruta de salida para el archivo .pth, utilizando el nombre del modelo
+    torch.save(results, output_path)                                                # Guarda el diccionario de resultados en un archivo .pth en la ruta especificada
+    print(f"✅ Guardado en: {output_path}")                                         
+
+def main():
+    # Configuración de argumentos con argparse
+    parser = argparse.ArgumentParser(description='Extracción de representaciones (Zoo completo)')
+    
+    # Permite especificar un modelo específico o procesar todo el Zoo si se deja como None
+    parser.add_argument('--model', type=str, default=None, help='Modelo específico o None para todo el Zoo')
+    
+    # Configuración de dataset y parámetros de procesamiento
+    parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'imagenet'])
+    
+    # Configuración de ruta, tamaño de batch, directorio de guardado y tamaño de imagen
+    parser.add_argument('--data_path', type=str, default='./data')     # Ruta base para los datos, se ajustará según el dataset seleccionado
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--save_dir', type=str, default='reps_folder')
+    parser.add_argument('--img_size', type=int, default=224)            # Tamaño de imagen para modelos que requieren entrada de 224x224, se ajustará según el modelo seleccionado
+    
+    # Analiza los argumentos proporcionados por el usuario
     args = parser.parse_args()
-    if 'LOCAL_RANK' not in os.environ:
-        os.environ['LOCAL_RANK'] = str(args.local_rank)
 
-    if args.options and args.cfg_options:
-        raise ValueError(
-            '--options and --cfg-options cannot be both '
-            'specified, --options is deprecated in favor of --cfg-options')
-    if args.options:
-        warnings.warn('--options is deprecated in favor of --cfg-options')
-        args.cfg_options = args.options
+    # Configura el dispositivo (GPU si está disponible, de lo contrario CPU)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Crea el directorio de guardado si no existe
+    os.makedirs(args.save_dir, exist_ok=True)
 
-    return args
+    # Configura las transformaciones de imagen, ajustando el tamaño según el modelo seleccionado
+    transform = transforms.Compose([
+        transforms.Resize((args.img_size, args.img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),  # Normalización estándar para modelos preentrenados en ImageNet
+    ])
 
-
-def main_block():
-    args = parse_args()
-
-    cfg = mmcv.Config.fromfile(args.config)
-    if args.cfg_options is not None:
-        cfg.merge_from_dict(args.cfg_options)
-    # set cudnn_benchmark
-    if cfg.get('cudnn_benchmark', False):
-        torch.backends.cudnn.benchmark = True
-    cfg.model.pretrained = None
-    cfg.data.test.test_mode = True
-
-    # assert args.metrics or args.out, \
-    #     'Please specify at least one of output path and evaluation metrics.'
-
-    # init distributed env first, since logger depends on the dist info.
-    if args.launcher == 'none':
-        distributed = False
+    # Carga el dataset según la selección del usuario, ajustando la ruta y las transformaciones
+    if args.dataset == 'cifar10':
+        dataset = datasets.CIFAR10(root=args.data_path, train=False, download=True, transform=transform)
     else:
-        distributed = True
-        init_dist(args.launcher, **cfg.dist_params)
+        dataset = datasets.ImageFolder(root=os.path.join(args.data_path, 'val'), transform=transform)
 
-    # build the dataloader
-    dataset = build_dataset(cfg.data.test)
-    # the extra round_up data will be removed during gpu/cpu collect
-    data_loader = build_dataloader(
-        dataset,
-        samples_per_gpu=cfg.data.samples_per_gpu,
-        workers_per_gpu=cfg.data.workers_per_gpu,
-        dist=distributed,
-        shuffle=False,
-        round_up=True)
+    # Configura el DataLoader para iterar sobre el dataset con el tamaño de batch especificado
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
-    assert cfg.model.train_cfg.model_name in MODEL_BLOCKS.keys(), \
-        "Model name must in the MODEL_BLOCKS"
+    # Lógica de selección de modelos
+    models_to_process = [args.model] if args.model else list(MODEL_BLOCKS.keys()) # Si se especifica un modelo, procesa solo ese; de lo contrario, procesa todos los modelos definidos en MODEL_BLOCKS
 
-    train_strategy = cfg.model.train_cfg.get('train_strategy', None)
-
-    block_list = MODEL_BLOCKS[cfg.model.train_cfg.model_name]
-    feature_layers = dict()
-    feature_layers_names = []
-    # build the model and load checkpoint
-    if cfg.model.train_cfg.model_name.startswith('vit') or cfg.model.train_cfg.model_name.startswith('swin'):
-        hook_class = GetFeatureHook_transformer
-    else:
-        hook_class = GetFeatureHook
-
-    model = build_classifier(cfg.model)
-    # model.init_weights()
-    # exit()
-    ckp_path = cfg.get('load_from', None)
-    if ckp_path is not None:
-        print(f'Loading from {ckp_path}')
-        load_checkpoint(model, ckp_path, revise_keys=[(r'^module\.backbone\.', ''),
-                                                      (r'^backbone\.', '')])
-
-    for name, module in model.named_modules():
-        for blk_name in block_list:
-            if name.endswith(blk_name):
-                feature_layers_names.append(name)
-                feature_layers[name] = hook_class(module)
-                break
-
-    fp16_cfg = cfg.get('fp16', None)
-    if fp16_cfg is not None:
-        wrap_fp16_model(model)
-
-    if not distributed:
-        if args.device == 'cpu':
-            model = model.cpu()
-        else:
-            model = MMDataParallel(model, device_ids=[0])
-        # model.CLASSES = CLASSES
-        show_kwargs = {} if args.show_options is None else args.show_options
-        outputs = single_gpu_test(model, data_loader, args.show, args.show_dir,
-                                  **show_kwargs)
-    else:
-        model = MMDistributedDataParallel(
-            model.cuda(),
-            device_ids=[torch.cuda.current_device()],
-            broadcast_buffers=False)
-        outputs = multi_gpu_test(model, data_loader, args.tmpdir,
-                                 args.gpu_collect)
-
-        # collect results from all ranks
-        for layer_name in feature_layers_names:
-            layer = feature_layers[layer_name]
-            if args.gpu_collect:
-                layer.feature = collect_results_gpu(
-                    layer.feature, len(dataset))
-            else:
-                layer.feature = collect_results_cpu(
-                    layer.feature, len(dataset), args.tmpdir)
-
-    rank, _ = get_dist_info()
-    if rank == 0:
-        prog_bar = mmcv.ProgressBar(len(feature_layers_names))
-        feat = dict()
-        size = dict()
-        for layer_name in feature_layers_names:
-            layer = feature_layers[layer_name]
-            layer.concat()
-            prog_bar.update()
-            num = layer.feature.size(0)
-            size[layer_name] = [layer.in_size, layer.out_size]
-            feat[layer_name] = layer.feature.view(num, -1)
-        if train_strategy:
-            results = dict(model_name=cfg.model.train_cfg.model_name,
-                           train_strategy=train_strategy,
-                           size=size,
-                           feat=feat)
-        else:
-            results = dict(model_name=cfg.model.train_cfg.model_name,
-                           size=size,
-                           feat=feat)
-        # mmcv.dump(results, args.out)
-        outfile = Path(args.root if args.root else "features") / (Path(args.config).stem + ".pth")
-        outfile.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(results, outfile)
-
+    # Itera sobre los modelos seleccionados y procesa cada uno utilizando la función process_single_model
+    for m_name in models_to_process:
+        process_single_model(m_name, dataloader, device, args)
 
 if __name__ == '__main__':
-    main_block()
+    main()
