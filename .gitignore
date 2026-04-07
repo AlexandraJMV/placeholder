@@ -29,5 +29,9 @@ mis_similitudes/
 0
 simple_poc/supernet_checkpoint.pth
 simple_poc/supernet_checkpoint_resume.pth
+Details.md
+hooks_ydemases.md
+sim_folder/
+Similitud.md
 
 .DS_Store

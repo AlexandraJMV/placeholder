@@ -1,8 +1,6 @@
 import sys
 import os
 
-# --- PARCHE 1: Arreglar conflicto de versiones de timm ---
-# Esto fuerza a usar la carpeta local 'third_package'
 sys.path.insert(0, os.path.join(os.getcwd(), 'third_package'))
 
 import argparse
@@ -47,16 +45,25 @@ def parse_args():
 
     return args
 
+
+# --- Funciones de Carga y Preprocesamiento ---
+# Esta función carga todas las matrices de similitud desde el directorio especificado,
+# asegurándose de manejar casos donde solo exista una de las dos combinaciones 
+# (A.B o B.A) y almacenando ambas versiones (normal y transpuesta) en un diccionario 
+# para acceso rápido.
 def get_all_sim(args):
-    """Carga las matrices de similitud sin usar mmcv"""
+    
+    # Diccionario para almacenar todas las matrices de similitud cargadas
     all_sim_dict = dict()
     
     # Leer modelos disponibles desde el JSON
     with open(args.shape_path, 'r') as f:
         shapes = json.load(f)
+    
+    # Filtrar solo los modelos que están en MODEL_ZOO para evitar cargar matrices innecesarias
     available_models = [m for m in shapes.keys() if m in MODEL_ZOO]
 
-    # Generar combinaciones
+    # Generar combinaciones de modelos (A.B y B.A) para cargar las matrices correspondientes
     comb = list(combinations(available_models, 2))
     comb += [(m, m) for m in available_models]
     
@@ -64,19 +71,23 @@ def get_all_sim(args):
     
     loaded_count = 0
     for pair in tqdm(list(comb), desc="Loading Matrices"):
-        a, b = pair
-        pickle1 = os.path.join(args.sim_path, f'{a}.{b}.pkl')
-        pickle2 = os.path.join(args.sim_path, f'{b}.{a}.pkl')
+        a, b = pair                                                 # Desempaquetar los nombres de los modelos en la combinación actual
+        pickle1 = os.path.join(args.sim_path, f'{a}.{b}.pkl')       # Construir la ruta para la matriz A.B
+        pickle2 = os.path.join(args.sim_path, f'{b}.{a}.pkl')       # Construir la ruta para la matriz B.A (transpuesta de A.B)
 
         data = None
         is_transpose = False
 
+        # Intentar cargar la matriz A.B, si no existe, 
+        # intentar cargar B.A y marcar que es transpuesta  
         if os.path.exists(pickle1):
             with open(pickle1, 'rb') as f: data = pickle.load(f)
         elif os.path.exists(pickle2):
             with open(pickle2, 'rb') as f: data = pickle.load(f)
             is_transpose = True
         
+        # Si se cargó alguna matriz, almacenarla en el diccionario 
+        # con ambas versiones (normal y transpuesta)
         if data is not None:
             sim_matrix = data['sim']
             if not is_transpose:
@@ -90,6 +101,7 @@ def get_all_sim(args):
     if loaded_count == 0:
         raise ValueError("¡No se cargó ninguna matriz! Revisa que 'mis_similitudes' tenga archivos .pkl")
 
+    # Crear la instancia de Block_Sim con el diccionario de similitudes cargado
     block_sims = Block_Sim(all_sim_dict)
     return block_sims
 
@@ -252,17 +264,26 @@ def print_partition(block_split_dict):
         blocks_str = ' | '.join([str(b) for b in block_split_dict[model_name]])
         print(f"[{model_name}]: {blocks_str}")
 
+
+# --- Función Principal ---
+# Esta función orquesta todo el proceso: carga las matrices de similitud, 
+# inicializa la partición y asignación, y luego ejecuta el proceso iterativo 
+# de optimización (reparticionar, recentrar, reasignar)
 def main():
+    
+    # Parsear argumentos
     args = parse_args()
     
-    # --- FIX: Inject the correct shapes into utils ---
+    # Actualizar formas globales (si es necesario) para asegurar que las 
+    # matrices de similitud se correspondan con las formas correctas de los bloques
     update_global_shapes(args.shape_path)
 
-    # 1. Cargar datos
-    block_sims = get_all_sim(args)
-    all_sim = 0
-    best_all_assignmemt = None
-    best_block_split_dict = None
+    # Cargar todas las matrices de similitud en una sola estructura 
+    # para acceso rápido durante la optimización
+    block_sims = get_all_sim(args)      
+    all_sim = 0                         # Variable para rastrear la mejor similitud total encontrada
+    best_all_assignmemt = None          # Variable para almacenar la mejor asignación encontrada durante los trials
+    best_block_split_dict = None        # Variable para almacenar la mejor partición de bloques encontrada durante los trials
 
     print(f"Iniciando búsqueda: {args.trial} intentos, {args.num_iter} iteraciones...")
 

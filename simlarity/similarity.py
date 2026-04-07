@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import math
 
+
 def gram_linear(x):
   """Compute Gram (kernel) matrix for a linear kernel.
 
@@ -11,6 +12,7 @@ def gram_linear(x):
   Returns:
     A num_examples x num_examples Gram matrix of examples.
   """
+  
   return x.dot(x.T)
 
 
