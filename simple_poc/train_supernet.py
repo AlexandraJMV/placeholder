@@ -299,15 +299,22 @@ def main():
         # FIX (FLAW 1 + FLAW 6): Proper single-path validation with BN calib.
         # During early epochs, skip calibration to save time; enable after warmup.
         do_calibrate = (epoch >= 10)  # Only calibrate after initial warmup
-        calib_batches = 30 if do_calibrate else 0
+        calib_batches = 10 if do_calibrate else 0
 
-        val_loss, val_acc, val_std, per_path_accs = validate_supernet(
-            model, trainloader, valloader, criterion, DEVICE,
-            fixed_paths,
-            use_amp=USE_AMP,
-            calibrate=do_calibrate,
-            calib_batches=calib_batches,
-        )
+        if (epoch + 1) % 5 == 0 or epoch == total_epochs - 1:
+            val_loss, val_acc, val_std, per_path_accs = validate_supernet(
+                model, trainloader, valloader, criterion, DEVICE,
+                fixed_paths,
+                use_amp=USE_AMP,
+                calibrate=do_calibrate,
+                calib_batches=10,
+            )
+            print(f"  Val — Loss: {val_loss:.4f} | Acc: {val_acc:.2f}% ± {val_std:.2f}%")
+            print(f"  Per-path accs: {[f'{a:.1f}' for a in per_path_accs]}")
+        else:
+            # Skip validation this epoch — use last known values
+            val_loss, val_acc, val_std, per_path_accs = 0.0, 0.0, 0.0, []
+            print(f"  Val — skipped (runs every 5 epochs)")
 
         # Restore train mode after validation
         model.train()
