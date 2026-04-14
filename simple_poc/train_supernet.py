@@ -16,7 +16,6 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
-from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 import argparse
 import random
@@ -82,7 +81,7 @@ def validate_single_path(model, loader, criterion, device, path, use_amp=True):
     with torch.no_grad():
         for inputs, targets in loader:
             inputs, targets = inputs.to(device), targets.to(device)
-            with autocast(enabled=use_amp):
+            with torch.amp.autocast('cuda', enabled=use_amp):
                 outputs = model(inputs, path=path)
                 loss = criterion(outputs, targets)
             total_loss += loss.item()
@@ -153,6 +152,7 @@ def main():
     # Data
     # ------------------------------------------------------------------ #
     transform_train = transforms.Compose([
+        transforms.Resize(64),  
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
@@ -160,6 +160,7 @@ def main():
                              (0.2023, 0.1994, 0.2010)),
     ])
     transform_val = transforms.Compose([
+        transforms.Resize(64),   
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465),
                              (0.2023, 0.1994, 0.2010)),
@@ -180,10 +181,10 @@ def main():
     # ------------------------------------------------------------------ #
     # Model
     # ------------------------------------------------------------------ #
-    model = SuperNetwork(
+    model = SuperNetwork( 
         plan_path="network_plan.pkl",
         num_classes=10,
-        input_size=32,
+        input_size=64,
         stitch_init_mode=args.init_mode,
         matrices_path=args.matrices_path,
     ).to(DEVICE)
@@ -206,7 +207,7 @@ def main():
     )
 
     # FIX (FLAW 2): GradScaler for AMP
-    scaler = GradScaler(enabled=USE_AMP)
+    scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
 
     criterion = nn.CrossEntropyLoss()
 
@@ -219,7 +220,7 @@ def main():
 
     if args.resume and os.path.exists(latest_ckpt):
         print(f"📥 Loading checkpoint: {latest_ckpt}")
-        checkpoint = torch.load(latest_ckpt, map_location=DEVICE)
+        checkpoint = torch.load(latest_ckpt, map_location=DEVICE, weights_only=False)
         model.load_state_dict(checkpoint['state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         scaler.load_state_dict(checkpoint.get('scaler', scaler.state_dict()))
@@ -234,22 +235,15 @@ def main():
     # last_epoch pointer is correctly restored without corrupting T_max.
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        T_max=args.epochs,   # Always relative to THIS run
+        T_max=total_epochs,   # full span, never relative
         eta_min=1e-5,
     )
 
-    if checkpoint is not None and 'scheduler' in checkpoint:
-        # Only restore last_epoch; do NOT restore T_max from old checkpoint
-        # to avoid the cosine cycle collapsing early.
-        saved_scheduler = checkpoint['scheduler']
-        scheduler.last_epoch = saved_scheduler.get('last_epoch', -1)
-        scheduler._step_count = saved_scheduler.get('_step_count', 1)
-        # Recompute base_lrs from current optimizer state
-        scheduler.base_lrs = [group['initial_lr']
-                               if 'initial_lr' in group
-                               else args.lr
-                               for group in optimizer.param_groups]
-
+    # If resuming, fast-forward scheduler to correct position
+    # by stepping through all already-completed epochs
+    if checkpoint is not None:
+        for _ in range(start_epoch):
+            scheduler.step()
     # ------------------------------------------------------------------ #
     # Fixed validation paths — isolated RNG (FIX FLAW 7)
     # ------------------------------------------------------------------ #
@@ -276,7 +270,7 @@ def main():
             optimizer.zero_grad(set_to_none=True)  # Slightly more efficient
 
             # FIX (FLAW 2): AMP forward + backward
-            with autocast(enabled=USE_AMP):
+            with torch.amp.autocast('cuda', enabled=USE_AMP):
                 # FIX (FLAW 7): Use isolated RNG for path sampling
                 path = model.sample_path(rng=sampling_rng)
                 outputs = model(inputs, path=path)
