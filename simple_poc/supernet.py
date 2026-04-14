@@ -191,8 +191,7 @@ class SuperNetwork(nn.Module):
                     else:
                         # Use the actual output from the corresponding previous block
                         # (same index if available, else first block in prev stage)
-                        prev_idx = min(block_idx, len(stage_infos[i-1]) - 1)
-                        prev_info = stage_infos[i-1][prev_idx]
+                        prev_info = stage_infos[i-1][0]  
                         real_in_ch = prev_info['out_ch']
                         real_in_res = prev_info['out_res']
                         if prev_info['type'] == 'CNN':
@@ -392,6 +391,6 @@ if __name__ == '__main__':
     if os.path.exists(pkl_path):
         net = SuperNetwork(pkl_path, num_classes=10, input_size=32,
                            stitch_init_mode='ls')
-        x = torch.randn(2, 3, 32, 32)
+        x = torch.razndn(2, 3, 32, 32)
         y = net(x)
         print(f"Output shape: {y.shape}")  # Should be (2, 10)
