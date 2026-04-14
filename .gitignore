@@ -1,7 +1,7 @@
 outputs
 data
 work_dirs
-
+!C:\Users\masap\OneDrive\Escritorio\dery\tools\MODEL_INOUT_SHAPE.json
 .ipynb_checkpoints/
 .venv/
 .dist/
