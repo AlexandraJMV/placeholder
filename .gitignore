@@ -15,6 +15,12 @@ mmcls_addon/
 third_package/
 README.md
 
+simple_poc/full_test/*
+simple_poc/full_test_lr005/*
+simple_poc/full_train_test/*
+simple_poc/stitches_only_test/*
+simple_poc/supernet_alltrain_lr005-v2/*
+
 !simlarity/
 !simple_poc/
 !.gitignore
