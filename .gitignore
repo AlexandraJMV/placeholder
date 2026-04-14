@@ -1,7 +1,6 @@
 outputs
 data
 work_dirs
-MODEL_INOUT_SHAPE.json
 
 .ipynb_checkpoints/
 .venv/
@@ -41,3 +40,10 @@ sim_folder/
 Similitud.md
 
 .DS_Store
+*.md
+*.json
+*.jsonl
+*.log
+*.pth
+*.ckpt
+*.csv

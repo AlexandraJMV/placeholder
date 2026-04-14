@@ -1,19 +1,124 @@
-# --- Núcleo Matemático y de Datos ---
-numpy>=1.21.0
-scipy
-scikit-learn       # Vital para el algoritmo de partición (Clustering)
-pandas             # Útil para leer logs o CSVs
-
-# --- Procesamiento de Imágenes ---
-opencv-python      # Carga rápida de imágenes
-Pillow             # Manipulación básica de imágenes
-
-# --- Utilidades del Proyecto ---
-pyyaml             # Para leer configuraciones
-tqdm               # Barras de progreso
-termcolor          # Colores en la terminal
-matplotlib         # Para graficar resultados de similitud
-packaging          # Manejo de versiones
-
-# --- Modelos Base ---
-timm>=0.4.12       # Necesario aunque usemos 'third_package' como base
+aliyun-python-sdk-core==2.16.0
+aliyun-python-sdk-kms==2.16.5
+asttokens==3.0.1
+blinker==1.9.0
+cachetools==5.5.2
+certifi==2025.6.15
+cffi==2.0.0
+charset-normalizer==3.4.2
+click==8.2.1
+colorama==0.4.6
+comm==0.2.3
+contourpy==1.3.3
+crcmod==1.7
+cryptography==46.0.3
+cycler==0.12.1
+dash==3.0.4
+dash-bootstrap-components==2.0.3
+dash-core-components==2.0.0
+dash-html-components==2.0.0
+debugpy==1.8.20
+decorator==5.2.1
+distlib==0.3.9
+executing==2.2.1
+Faker==37.4.0
+filelock==3.14.0
+Flask==3.0.3
+fonttools==4.62.1
+fsspec==2025.5.1
+google-api-core==2.24.2
+google-api-python-client==2.169.0
+google-auth==2.40.1
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.2
+googleapis-common-protos==1.70.0
+gspread==6.2.1
+httplib2==0.22.0
+huggingface-hub==0.33.0
+idna==3.10
+importlib_metadata==8.7.0
+ipykernel==7.2.0
+ipython==9.11.0
+ipython_pygments_lexers==1.1.1
+itsdangerous==2.2.0
+jedi==0.19.2
+Jinja2==3.1.6
+jmespath==0.10.0
+joblib==1.5.1
+jupyter_client==8.8.0
+jupyter_core==5.9.1
+kiwisolver==1.5.0
+Markdown==3.10
+markdown-it-py==4.0.0
+MarkupSafe==3.0.2
+matplotlib==3.10.8
+matplotlib-inline==0.2.1
+mdurl==0.1.2
+model-index==0.1.11
+mpmath==1.3.0
+narwhals==1.43.1
+nest-asyncio==1.6.0
+networkx==3.5
+nltk==3.9.1
+numpy==2.3.0
+oauth2client==4.1.3
+oauthlib==3.2.2
+opendatalab==0.0.10
+openmim==0.3.9
+openxlab==0.1.3
+ordered-set==4.1.0
+oss2==2.17.0
+packaging==24.2
+pandas==2.3.0
+parso==0.8.6
+pillow==11.3.0
+platformdirs==4.3.6
+plotly==6.1.2
+prompt_toolkit==3.0.52
+proto-plus==1.26.1
+protobuf==6.30.2
+psutil==7.2.2
+pure_eval==0.2.3
+pyasn1==0.6.1
+pyasn1_modules==0.4.2
+pycparser==2.23
+pycryptodome==3.23.0
+Pygments==2.19.2
+pyparsing==3.2.3
+python-dateutil==2.9.0.post0
+pytz==2023.4
+pywin32==311
+PyYAML==6.0.2
+pyzmq==27.1.0
+regex==2024.11.6
+requests==2.28.2
+requests-oauthlib==2.0.0
+retrying==1.3.4
+rich==13.4.2
+rsa==4.9.1
+safetensors==0.5.3
+scipy==1.14.1
+seaborn==0.13.2
+setuptools==60.2.0
+six==1.17.0
+stack-data==0.6.3
+sympy==1.13.1
+tabulate==0.9.0
+textblob==0.19.0
+tiktoken==0.12.0
+tokenizers==0.21.1
+torch==2.5.1+cu121
+torchaudio==2.5.1+cu121
+torchvision==0.20.1+cu121
+tornado==6.5.5
+tqdm==4.65.2
+traitlets==5.14.3
+transformers==4.52.4
+typing_extensions==4.14.0
+tzdata==2025.2
+uritemplate==4.1.1
+urllib3==1.26.20
+virtualenv==20.27.1
+wcwidth==0.6.0
+Werkzeug==3.0.6
+zipp==3.23.0
