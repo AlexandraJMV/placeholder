@@ -52,6 +52,9 @@ def parse_args():
                         help="Resume from latest.pth if it exists")
     parser.add_argument('--no_amp',             action='store_true',
                         help="Disable AMP (use for debugging only)")
+    parser.add_argument('--bump_lr',            action='store_true',
+                        help="Bump LR to 1e-4 when resuming with low LR (<2e-5)")
+    
     return parser.parse_args()
 
 
@@ -228,6 +231,23 @@ def main():
         best_val_acc = checkpoint.get('best_val_acc', 0.0)
         print(f"   Resumed from epoch {start_epoch}, best_val_acc={best_val_acc:.2f}%")
 
+    ###
+        # ──────────────────────────────────────────────────────────────
+        # NEW: LR bump logic
+        if args.bump_lr:
+            current_lr = optimizer.param_groups[0]['lr']
+            TARGET_LR = 1e-4
+            if current_lr < 2e-5:
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = TARGET_LR
+                    param_group['initial_lr'] = TARGET_LR  # Reset initial_lr too
+                print(f"   ⚠️  LR bumped: {current_lr:.2e} → {TARGET_LR:.2e}")
+            else:
+                print(f"   ℹ️  LR already sufficient ({current_lr:.2e}), no bump needed")
+        # ──────────────────────────────────────────────────────────────
+
+
+###
     total_epochs = start_epoch + args.epochs
 
     # FIX (FLAW 3): T_max must equal the number of epochs THIS run will train,
@@ -244,6 +264,18 @@ def main():
     if checkpoint is not None:
         for _ in range(start_epoch):
             scheduler.step()
+    
+    if checkpoint is not None and 'scheduler' in checkpoint:
+        saved_scheduler = checkpoint['scheduler']
+        scheduler.last_epoch = saved_scheduler.get('last_epoch', -1)
+        scheduler._step_count = saved_scheduler.get('_step_count', 1)
+        
+        # ──────────────────────────────────────────────────────────────
+        # NEW: Use current optimizer LR for base_lrs (reflects any bump)
+        scheduler.base_lrs = [group['lr'] for group in optimizer.param_groups]
+        # ──────────────────────────────────────────────────────────────
+    
+    print(f"   Scheduler base_lrs: {[f'{lr:.2e}' for lr in scheduler.base_lrs]}")
     # ------------------------------------------------------------------ #
     # Fixed validation paths — isolated RNG (FIX FLAW 7)
     # ------------------------------------------------------------------ #
