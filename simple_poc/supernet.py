@@ -417,11 +417,36 @@ class SuperNetwork(nn.Module):
 
     # SIMPLEST FIX — supernet.py, set_bn_tracking:
     def set_bn_tracking(self, track: bool):
+        """Enable or disable running stats tracking for all BN layers."""
         def _set_tracking(module):
             if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
-                module.track_running_stats = track
-                # Do NOT touch running_mean / running_var — toggling the flag is sufficient.
-                # In train mode, BN always uses batch stats, so no cross-path pollution occurs.
+                if track:
+                    # Re-allocate buffers if they were nulled by a prior set_bn_tracking(False)
+                    # MUST happen before setting track_running_stats=True,
+                    # otherwise reset_running_stats() will crash on None buffers
+                    if module.running_mean is None:
+                        dev = next(
+                            (p.device for p in module.parameters()),
+                            torch.device('cpu')
+                        )
+                        module.register_buffer(
+                            'running_mean',
+                            torch.zeros(module.num_features, device=dev))
+                        module.register_buffer(
+                            'running_var',
+                            torch.ones(module.num_features, device=dev))
+                        module.register_buffer(
+                            'num_batches_tracked',
+                            torch.tensor(0, dtype=torch.long, device=dev))
+                    module.track_running_stats = True
+                else:
+                    # Null the buffers intentionally:
+                    # This forces eval mode to use batch statistics (bn_training=True)
+                    # instead of stale/uninitialized running stats.
+                    # PyTorch BN in eval mode: if running_mean is None → uses batch stats
+                    module.track_running_stats = False
+                    module.running_mean = None
+                    module.running_var = None
         self.apply(_set_tracking)
     
 
