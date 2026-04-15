@@ -386,9 +386,14 @@ class SuperNetwork(nn.Module):
     ###
     @torch.no_grad()
     def calibrate_bn(self, loader, path, n_batches=50, device='cuda'):
-        # Temporarily enable tracking and reset stats
+        """
+        Recalibrate BN running statistics for a specific sub‑network path.
+        - Temporarily enables tracking and resets stats.
+        - Runs n_batches forward passes in train() mode.
+        - Restores original training mode and leaves tracking enabled.
+        """
+        # Enable tracking and reset stats to current batch estimates
         self.set_bn_tracking(True)
-        
         def reset_bn(m):
             if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
                 m.reset_running_stats()
@@ -396,7 +401,7 @@ class SuperNetwork(nn.Module):
 
         was_training = self.training
         self.train()
-        with torch.no_grad(), torch.amp.autocast('cuda', enabled=False): # Disable AMP too (see Rank 4)
+        with torch.amp.autocast('cuda', enabled=False):   # Keep FP32 for stable BN stats
             for batch_idx, (inputs, _) in enumerate(loader):
                 if batch_idx >= n_batches:
                     break
@@ -404,10 +409,8 @@ class SuperNetwork(nn.Module):
 
         if not was_training:
             self.eval()
-        # Keep tracking enabled after calibration so eval uses correct stats
-        # (will be disabled again at start of next training epoch if needed)
-        
-    ###
+        # Tracking remains enabled – ready for eval() with correct running stats 
+        ###
 
     def sample_path(self, rng=None):
         """Sample a random path. Uses isolated RNG if provided."""
@@ -417,38 +420,16 @@ class SuperNetwork(nn.Module):
 
     # SIMPLEST FIX — supernet.py, set_bn_tracking:
     def set_bn_tracking(self, track: bool):
-        """Enable or disable running stats tracking for all BN layers."""
+        """
+        Enable or disable running stats tracking for all BN layers.
+        Does NOT delete buffers – deletion breaks eval() mode when tracking is False.
+        """
         def _set_tracking(module):
             if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
-                if track:
-                    # Re-allocate buffers if they were nulled by a prior set_bn_tracking(False)
-                    # MUST happen before setting track_running_stats=True,
-                    # otherwise reset_running_stats() will crash on None buffers
-                    if module.running_mean is None:
-                        dev = next(
-                            (p.device for p in module.parameters()),
-                            torch.device('cpu')
-                        )
-                        module.register_buffer(
-                            'running_mean',
-                            torch.zeros(module.num_features, device=dev))
-                        module.register_buffer(
-                            'running_var',
-                            torch.ones(module.num_features, device=dev))
-                        module.register_buffer(
-                            'num_batches_tracked',
-                            torch.tensor(0, dtype=torch.long, device=dev))
-                    module.track_running_stats = True
-                else:
-                    # Null the buffers intentionally:
-                    # This forces eval mode to use batch statistics (bn_training=True)
-                    # instead of stale/uninitialized running stats.
-                    # PyTorch BN in eval mode: if running_mean is None → uses batch stats
-                    module.track_running_stats = False
-                    module.running_mean = None
-                    module.running_var = None
+                module.track_running_stats = track
+                # Buffers are never nulled; eval() can safely fall back to batch stats
+                # when track_running_stats == False.
         self.apply(_set_tracking)
-    
 
 if __name__ == '__main__':
     pkl_path = "network_plan.pkl"

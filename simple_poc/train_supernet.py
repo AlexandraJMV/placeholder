@@ -98,33 +98,28 @@ def validate_single_path(model, loader, criterion, device, path, use_amp=True):
 
 def validate_supernet(model, train_loader, val_loader, criterion, device,
                       fixed_paths, use_amp=True, calibrate=True,
-                      calib_batches=30):
+                      calib_batches=10):   # Reduced to 10 for efficiency
     """
-    FIX (FLAW 1 + FLAW 6): Validates the supernet by:
+    Validates the supernet by:
     1. Calibrating BN for each fixed path individually.
     2. Evaluating each path in isolation.
-    Returns average accuracy and per-path accuracies for analysis.
+    Returns average accuracy and per‑path accuracies.
     """
     path_accs = []
     path_losses = []
 
     for path in fixed_paths:
         if calibrate:
-            # Recalibrate BN running stats for this specific path
             model.calibrate_bn(train_loader, path,
-                                n_batches=calib_batches, device=device)
+                               n_batches=calib_batches, device=device)
 
         loss, acc = validate_single_path(model, val_loader, criterion,
                                          device, path, use_amp)
         path_accs.append(acc)
         path_losses.append(loss)
 
-    avg_acc = float(np.mean(path_accs))
-    avg_loss = float(np.mean(path_losses))
-    std_acc = float(np.std(path_accs))
-
-    return avg_loss, avg_acc, std_acc, path_accs
-
+    return (float(np.mean(path_losses)), float(np.mean(path_accs)),
+            float(np.std(path_accs)), path_accs)
 
 def main():
     args = parse_args()
@@ -331,7 +326,7 @@ def main():
 
         # FIX (FLAW 1 + FLAW 6): Proper single-path validation with BN calib.
         # During early epochs, skip calibration to save time; enable after warmup.
-        do_calibrate = (epoch >= 10)  # Only calibrate after initial warmup
+        do_calibrate = True  # Only calibrate after initial warmup
         calib_batches = 30 if do_calibrate else 0
 
         if (epoch + 1) % 5 == 0 or epoch == total_epochs - 1:
