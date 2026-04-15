@@ -396,7 +396,7 @@ class SuperNetwork(nn.Module):
 
         was_training = self.training
         self.train()
-        with torch.no_grad(), torch.cuda.amp.autocast(enabled=False):  # Disable AMP too (see Rank 4)
+        with torch.no_grad(), torch.amp.autocast('cuda', enabled=False): # Disable AMP too (see Rank 4)
             for batch_idx, (inputs, _) in enumerate(loader):
                 if batch_idx >= n_batches:
                     break
@@ -415,17 +415,15 @@ class SuperNetwork(nn.Module):
             return [rng.randint(0, c - 1) for c in self.choices_per_stage]
         return [torch.randint(0, c, (1,)).item() for c in self.choices_per_stage]
 
+    # SIMPLEST FIX — supernet.py, set_bn_tracking:
     def set_bn_tracking(self, track: bool):
-        """Enable or disable running stats tracking for all BN layers."""
         def _set_tracking(module):
             if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
                 module.track_running_stats = track
-                if not track:
-                    # Optionally reset stats to avoid using stale ones during training
-                    module.running_mean = None
-                    module.running_var = None
+                # Do NOT touch running_mean / running_var — toggling the flag is sufficient.
+                # In train mode, BN always uses batch stats, so no cross-path pollution occurs.
         self.apply(_set_tracking)
-  
+    
 
 if __name__ == '__main__':
     pkl_path = "network_plan.pkl"
