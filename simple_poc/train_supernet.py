@@ -247,35 +247,37 @@ def main():
         # ──────────────────────────────────────────────────────────────
 
 
-###
-    total_epochs = start_epoch + args.epochs
-
-    # FIX (FLAW 3): T_max must equal the number of epochs THIS run will train,
-    # not total_epochs. Reload scheduler state AFTER construction so the
-    # last_epoch pointer is correctly restored without corrupting T_max.
+    ###
+    
+    
+    # ------------------------------------------------------------------ #
+    # Scheduler creation (placed AFTER resume to capture final LR state)
+    # ------------------------------------------------------------------ #
+    # IMPORTANT: T_max should equal the number of epochs THIS run will train.
+    # For a fresh run: T_max = args.epochs (e.g., 50)
+    # For a resumed run: T_max = args.epochs (e.g., 30 more epochs)
+    # This ensures the cosine decay spans exactly the current training segment.
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        T_max=total_epochs,   # full span, never relative
+        T_max=args.epochs,   # epochs for this run only, NOT cumulative
         eta_min=1e-5,
     )
 
-    # If resuming, fast-forward scheduler to correct position
-    # by stepping through all already-completed epochs
-    if checkpoint is not None:
-        for _ in range(start_epoch):
-            scheduler.step()
-    
-    if checkpoint is not None and 'scheduler' in checkpoint:
-        saved_scheduler = checkpoint['scheduler']
-        scheduler.last_epoch = saved_scheduler.get('last_epoch', -1)
-        scheduler._step_count = saved_scheduler.get('_step_count', 1)
-        
-        # ──────────────────────────────────────────────────────────────
-        # NEW: Use current optimizer LR for base_lrs (reflects any bump)
+    # If we resumed from a checkpoint, load the saved scheduler state.
+    # This restores last_epoch and internal step count correctly.
+    if args.resume and checkpoint is not None and 'scheduler' in checkpoint:
+        scheduler.load_state_dict(checkpoint['scheduler'])
+        # After loading, synchronise base_lrs with current optimizer LR
+        # (important if --bump_lr was used)
         scheduler.base_lrs = [group['lr'] for group in optimizer.param_groups]
-        # ──────────────────────────────────────────────────────────────
-    
+
+    # Debug output: verify scheduler base learning rates
     print(f"   Scheduler base_lrs: {[f'{lr:.2e}' for lr in scheduler.base_lrs]}")
+
+    total_epochs = start_epoch + args.epochs   # total epochs after this run
+
+    ####
+    
     # ------------------------------------------------------------------ #
     # Fixed validation paths — isolated RNG (FIX FLAW 7)
     # ------------------------------------------------------------------ #
