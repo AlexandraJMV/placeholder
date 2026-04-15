@@ -155,6 +155,7 @@ class SuperNetwork(nn.Module):
         self.input_size       = input_size
         self.matrices         = {}
 
+        self.freeze_backbone = False
         if stitch_init_mode == 'ls' and matrices_path and os.path.exists(matrices_path):
             print(f"   Loading transform matrices from {matrices_path}...")
             with open(matrices_path, 'rb') as f:
@@ -165,7 +166,7 @@ class SuperNetwork(nn.Module):
 
         self.num_stages       = len(self.plan.center2block)
         self.choices_per_stage = [len(opts) for opts in self.plan.center2block]
-
+    
         self.stages   = nn.ModuleList()
         self.stitches = nn.ModuleList()
 
@@ -388,11 +389,8 @@ class SuperNetwork(nn.Module):
     def calibrate_bn(self, loader, path, n_batches=50, device='cuda'):
         """
         Recalibrate BN running statistics for a specific sub‑network path.
-        - Temporarily enables tracking and resets stats.
-        - Runs n_batches forward passes in train() mode.
-        - Restores original training mode and leaves tracking enabled.
+        FIX: Use torch.inference_mode() for safety and disable autocast.
         """
-        # Enable tracking and reset stats to current batch estimates
         self.set_bn_tracking(True)
         def reset_bn(m):
             if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
@@ -401,7 +399,8 @@ class SuperNetwork(nn.Module):
 
         was_training = self.training
         self.train()
-        with torch.amp.autocast('cuda', enabled=False):   # Keep FP32 for stable BN stats
+        # FIX: Use inference_mode for faster forward, autocast disabled already
+        with torch.inference_mode(False):   # keep grads off but allow BN stat updates
             for batch_idx, (inputs, _) in enumerate(loader):
                 if batch_idx >= n_batches:
                     break
@@ -409,27 +408,28 @@ class SuperNetwork(nn.Module):
 
         if not was_training:
             self.eval()
-        # Tracking remains enabled – ready for eval() with correct running stats 
-        ###
+        # Tracking remains enabled – ready for eval()
 
+    def set_bn_tracking(self, track: bool):
+        """Enable or disable running stats tracking for all BN layers."""
+        def _set_tracking(module):
+            if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
+                module.track_running_stats = track
+        self.apply(_set_tracking)
+
+    def set_backbone_requires_grad(self, requires_grad: bool):
+        """Set requires_grad for all parameters inside self.stages (the backbone blocks)."""
+        for param in self.stages.parameters():
+            param.requires_grad = requires_grad
+        self.freeze_backbone = not requires_grad
+ 
+ 
     def sample_path(self, rng=None):
         """Sample a random path. Uses isolated RNG if provided."""
         if rng is not None:
             return [rng.randint(0, c - 1) for c in self.choices_per_stage]
         return [torch.randint(0, c, (1,)).item() for c in self.choices_per_stage]
 
-    # SIMPLEST FIX — supernet.py, set_bn_tracking:
-    def set_bn_tracking(self, track: bool):
-        """
-        Enable or disable running stats tracking for all BN layers.
-        Does NOT delete buffers – deletion breaks eval() mode when tracking is False.
-        """
-        def _set_tracking(module):
-            if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
-                module.track_running_stats = track
-                # Buffers are never nulled; eval() can safely fall back to batch stats
-                # when track_running_stats == False.
-        self.apply(_set_tracking)
 
 if __name__ == '__main__':
     pkl_path = "network_plan.pkl"

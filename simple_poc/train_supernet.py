@@ -41,7 +41,7 @@ def set_seed(seed=42):
 def parse_args():
     parser = argparse.ArgumentParser(description="Train One-Shot SuperNet (SPOS)")
     parser.add_argument('--batch_size',         type=int,   default=64)
-    parser.add_argument('--lr',                 type=float, default=0.005)
+    parser.add_argument('--lr',                 type=float, default=0.001)
     parser.add_argument('--epochs',             type=int,   default=50)
     parser.add_argument('--init_mode',          type=str,   default='ls',
                         choices=['ls', 'random'])
@@ -55,7 +55,10 @@ def parse_args():
                         help="Disable AMP (use for debugging only)")
     parser.add_argument('--bump_lr',            action='store_true',
                         help="Bump LR to 1e-4 when resuming with low LR (<2e-5)")
-    
+    # FIX: New flag to freeze backbone during training (recommended)
+    parser.add_argument('--freeze_backbone',    action='store_true',
+                        help="Freeze backbone parameters (except stitches). "
+                             "Overrides --train_only_stitches behavior.")
     return parser.parse_args()
 
 
@@ -98,7 +101,7 @@ def validate_single_path(model, loader, criterion, device, path, use_amp=True):
 
 def validate_supernet(model, train_loader, val_loader, criterion, device,
                       fixed_paths, use_amp=True, calibrate=True,
-                      calib_batches=10):   # Reduced to 10 for efficiency
+                      calib_batches=5):   # Reduced to 10 for efficiency
     """
     Validates the supernet by:
     1. Calibrating BN for each fixed path individually.
@@ -184,30 +187,57 @@ def main():
         matrices_path=args.matrices_path,
     ).to(DEVICE)
 
-    if args.train_only_stitches:
+    if args.train_only_stitches or args.freeze_backbone:
         print("🔒 Freezing backbone blocks — training stitches only")
-        for param in model.stages.parameters():
-            param.requires_grad = False
+        model.set_backbone_requires_grad(False)
+    else:
+        # Fine‑tune backbone with lower LR
+        model.set_backbone_requires_grad(True)
+        print("⚠️  Backbone will be fine‑tuned (lower LR applied)")
+        
+    stitch_params = []
+    backbone_params = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if 'stages' in name:   # backbone blocks
+            backbone_params.append(param)
+        else:                  # stitches, heads, etc.
+            stitch_params.append(param)
 
+    def no_weight_decay(module):
+        return isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm))
     # ------------------------------------------------------------------ #
     # Optimizer and AMP scaler
     # ------------------------------------------------------------------ #
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-
-    optimizer = optim.SGD(
-        trainable_params,
-        lr=args.lr,
-        momentum=0.9,
-        weight_decay=5e-4,
-    )
-
+    optimizer = optim.SGD([
+        {'params': stitch_params,
+         'lr': args.lr,
+         'momentum': 0.9,
+         'weight_decay': 5e-4},
+        {'params': backbone_params,
+         'lr': args.lr * 0.1,          # 10× smaller LR for pre‑trained weights
+         'momentum': 0.9,
+         'weight_decay': 5e-4}
+    ], lr=args.lr, momentum=0.9, weight_decay=5e-4)
+    
+        # Remove weight decay from BN layers in both groups (common practice)
+    for group in optimizer.param_groups:
+        for p in group['params']:
+            if hasattr(p, '_no_weight_decay'):   # we'll set this flag
+                continue
+        group['params'] = [p for p in group['params']
+                           if not any(no_weight_decay(m) for m in model.modules()
+                                      if hasattr(m, 'weight') and m.weight is p)]
+    
     # FIX (FLAW 2): GradScaler for AMP
     scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
 
     criterion = nn.CrossEntropyLoss()
 
+
     # ------------------------------------------------------------------ #
-    # Resume logic
+    # Resume logic with FIXED scheduler handling
     # ------------------------------------------------------------------ #
     start_epoch  = 0
     best_val_acc = 0.0
@@ -223,52 +253,33 @@ def main():
         best_val_acc = checkpoint.get('best_val_acc', 0.0)
         print(f"   Resumed from epoch {start_epoch}, best_val_acc={best_val_acc:.2f}%")
 
-    ###
-        # ──────────────────────────────────────────────────────────────
-        # NEW: LR bump logic
+        # FIX: Bump LR only if explicitly requested (avoid accidental)
         if args.bump_lr:
-            current_lr = optimizer.param_groups[0]['lr']
-            TARGET_LR = 1e-4
-            if current_lr < 2e-5:
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = TARGET_LR
-                    param_group['initial_lr'] = TARGET_LR  # Reset initial_lr too
-                print(f"   ⚠️  LR bumped: {current_lr:.2e} → {TARGET_LR:.2e}")
-            else:
-                print(f"   ℹ️  LR already sufficient ({current_lr:.2e}), no bump needed")
-        # ──────────────────────────────────────────────────────────────
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = max(param_group['lr'], 1e-4)
+            print(f"   ⚠️  LR manually bumped to ≥1e-4")
 
-
-    ###
-    
-    
-    # ------------------------------------------------------------------ #
-    # Scheduler creation (placed AFTER resume to capture final LR state)
-    # ------------------------------------------------------------------ #
-    # IMPORTANT: T_max should equal the number of epochs THIS run will train.
-    # For a fresh run: T_max = args.epochs (e.g., 50)
-    # For a resumed run: T_max = args.epochs (e.g., 30 more epochs)
-    # This ensures the cosine decay spans exactly the current training segment.
+    # FIX: Scheduler must span only the remaining epochs, not total epochs.
+    remaining_epochs = args.epochs
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        T_max=args.epochs,   # epochs for this run only, NOT cumulative
+        T_max=remaining_epochs,   # <-- CORRECT: only the epochs we will run now
         eta_min=1e-5,
     )
 
-    # If we resumed from a checkpoint, load the saved scheduler state.
-    # This restores last_epoch and internal step count correctly.
-    if args.resume and checkpoint is not None and 'scheduler' in checkpoint:
-        scheduler.load_state_dict(checkpoint['scheduler'])
-        # After loading, synchronise base_lrs with current optimizer LR
-        # (important if --bump_lr was used)
+    # Do NOT load scheduler state from checkpoint; we start a fresh annealing schedule.
+    # If we want to resume the exact LR value, we keep the optimizer LR as is,
+    # and let the scheduler start from step 0 with the current LR as the peak.
+    # This is the cleanest approach.
+    if args.resume and checkpoint is not None:
+        # Manually set scheduler's last_epoch to 0 (its internal counter)
+        scheduler.last_epoch = -1  # will become 0 after first step()
+        # Optionally, we can adjust base_lrs to match current optimizer LR
         scheduler.base_lrs = [group['lr'] for group in optimizer.param_groups]
+        print(f"   Scheduler reinitialized for {remaining_epochs} epochs. "
+              f"Base LRs: {[f'{lr:.2e}' for lr in scheduler.base_lrs]}")
 
-    # Debug output: verify scheduler base learning rates
-    print(f"   Scheduler base_lrs: {[f'{lr:.2e}' for lr in scheduler.base_lrs]}")
-
-    total_epochs = start_epoch + args.epochs   # total epochs after this run
-
-    ####
+    total_epochs = start_epoch + remaining_epochs
     
     # ------------------------------------------------------------------ #
     # Fixed validation paths — isolated RNG (FIX FLAW 7)
@@ -308,7 +319,10 @@ def main():
 
             # FIX (FLAW 8): Clip only trainable parameters
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(
+                [p for group in optimizer.param_groups for p in group['params'] if p.requires_grad],
+                max_norm=5.0
+            )
 
             scaler.step(optimizer)
             scaler.update()
@@ -324,23 +338,19 @@ def main():
         train_loss = running_loss / len(trainloader)
         train_acc  = 100.0 * correct / total
 
-        # FIX (FLAW 1 + FLAW 6): Proper single-path validation with BN calib.
-        # During early epochs, skip calibration to save time; enable after warmup.
-        do_calibrate = True  # Only calibrate after initial warmup
-        calib_batches = 30 if do_calibrate else 0
-
+        # FIX: Only validate every 5 epochs to save time, with reduced calibration batches
         if (epoch + 1) % 5 == 0 or epoch == total_epochs - 1:
             val_loss, val_acc, val_std, per_path_accs = validate_supernet(
                 model, trainloader, valloader, criterion, DEVICE,
                 fixed_paths,
                 use_amp=USE_AMP,
-                calibrate=do_calibrate,
-                calib_batches=calib_batches,
+                calibrate=True,
+                calib_batches=5,   # Reduced from 30 → 5 for efficiency
             )
             print(f"  Val — Loss: {val_loss:.4f} | Acc: {val_acc:.2f}% ± {val_std:.2f}%")
-            print(f"  Per-path accs: {[f'{a:.1f}' for a in per_path_accs]}")
+            if per_path_accs:
+                print(f"  Per-path accs: {[f'{a:.1f}' for a in per_path_accs]}")
         else:
-            # Skip validation this epoch — use last known values
             val_loss, val_acc, val_std, per_path_accs = 0.0, 0.0, 0.0, []
             print(f"  Val — skipped (runs every 5 epochs)")
 

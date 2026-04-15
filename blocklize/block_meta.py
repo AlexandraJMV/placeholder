@@ -19,7 +19,7 @@ MODEL_ZOO = [
     'resnet18',
     'mobilenetv3_small_050',
     'shufflenet_v2_x0_5',
-    'squeezenet1_1',
+    #'squeezenet1_1',
     'efficientnet_b0'
 ]
 
