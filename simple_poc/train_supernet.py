@@ -287,6 +287,8 @@ def main():
     sampling_rng = random.Random()
     sampling_rng.seed(42 + start_epoch)  # deterministic per-epoch but isolated
 
+    model.set_bn_tracking(False)   # Disable running stats during training
+    
     for epoch in range(start_epoch, total_epochs):
         model.train()
         running_loss = 0.0
@@ -341,6 +343,7 @@ def main():
             )
             print(f"  Val — Loss: {val_loss:.4f} | Acc: {val_acc:.2f}% ± {val_std:.2f}%")
             print(f"  Per-path accs: {[f'{a:.1f}' for a in per_path_accs]}")
+            model.set_bn_tracking(False)
         else:
             # Skip validation this epoch — use last known values
             val_loss, val_acc, val_std, per_path_accs = 0.0, 0.0, 0.0, []

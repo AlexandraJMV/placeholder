@@ -383,37 +383,31 @@ class SuperNetwork(nn.Module):
     # BN Calibration
     # ------------------------------------------------------------------ #
 
+    ###
     @torch.no_grad()
     def calibrate_bn(self, loader, path, n_batches=50, device='cuda'):
-        """
-        Recalibrate BatchNorm running stats for a specific path.
-        Call before evaluating any candidate during the search phase.
-        """
+        # Temporarily enable tracking and reset stats
+        self.set_bn_tracking(True)
+        
         def reset_bn(m):
             if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
                 m.reset_running_stats()
-                m.momentum = None
-
-        self.stages[0][path[0]].apply(reset_bn)
-        for i in range(1, self.num_stages):
-            self.stitches[i - 1][path[i - 1]][path[i]].apply(reset_bn)
-            self.stages[i][path[i]].apply(reset_bn)
+        self.apply(reset_bn)
 
         was_training = self.training
         self.train()
-        for batch_idx, (inputs, _) in enumerate(loader):
-            if batch_idx >= n_batches:
-                break
-            self(inputs.to(device), path=path)
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=False):  # Disable AMP too (see Rank 4)
+            for batch_idx, (inputs, _) in enumerate(loader):
+                if batch_idx >= n_batches:
+                    break
+                self(inputs.to(device), path=path)
 
         if not was_training:
             self.eval()
-
-        def restore_momentum(m):
-            if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
-                m.momentum = 0.1
-
-        self.apply(restore_momentum)
+        # Keep tracking enabled after calibration so eval uses correct stats
+        # (will be disabled again at start of next training epoch if needed)
+        
+    ###
 
     def sample_path(self, rng=None):
         """Sample a random path. Uses isolated RNG if provided."""
@@ -421,6 +415,17 @@ class SuperNetwork(nn.Module):
             return [rng.randint(0, c - 1) for c in self.choices_per_stage]
         return [torch.randint(0, c, (1,)).item() for c in self.choices_per_stage]
 
+    def set_bn_tracking(self, track: bool):
+        """Enable or disable running stats tracking for all BN layers."""
+        def _set_tracking(module):
+            if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
+                module.track_running_stats = track
+                if not track:
+                    # Optionally reset stats to avoid using stale ones during training
+                    module.running_mean = None
+                    module.running_var = None
+        self.apply(_set_tracking)
+  
 
 if __name__ == '__main__':
     pkl_path = "network_plan.pkl"
