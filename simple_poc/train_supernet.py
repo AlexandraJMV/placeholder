@@ -155,18 +155,14 @@ def main():
     # Data
     # ------------------------------------------------------------------ #
     transform_train = transforms.Compose([
-        transforms.Resize(64),  
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465),
-                             (0.2023, 0.1994, 0.2010)),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
     transform_val = transforms.Compose([
-        transforms.Resize(64),   
         transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465),
-                             (0.2023, 0.1994, 0.2010)),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
     trainset = torchvision.datasets.CIFAR10(
@@ -187,7 +183,7 @@ def main():
     model = SuperNetwork( 
         plan_path="network_plan.pkl",
         num_classes=10,
-        input_size=64,
+        input_size=32,
         stitch_init_mode=args.init_mode,
         matrices_path=args.matrices_path,
     ).to(DEVICE)
