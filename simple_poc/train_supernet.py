@@ -132,7 +132,7 @@ def validate_single_path(model, loader, criterion, device, path, use_amp=True):
 
 def validate_supernet(model, train_loader, val_loader, criterion, device,
                       fixed_paths, use_amp=True, calibrate=True,
-                      calib_batches=5):   # Reduced to 10 for efficiency
+                      calib_batches=100):   # Reduced to 10 for efficiency
     """
     Validates the supernet by:
     1. Calibrating BN for each fixed path individually.
@@ -373,7 +373,7 @@ def main():
                 fixed_paths,
                 use_amp=USE_AMP,
                 calibrate=True,
-                calib_batches=5,   # Reduced from 30 → 5 for efficiency
+                calib_batches=100,   # Reduced from 30 → 5 for efficiency
             )
             print(f"  Val — Loss: {val_loss:.4f} | Acc: {val_acc:.2f}% ± {val_std:.2f}%")
             if per_path_accs:
