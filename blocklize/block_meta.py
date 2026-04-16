@@ -19,7 +19,6 @@ MODEL_ZOO = [
     'resnet18',
     'mobilenetv3_small_050',
     'shufflenet_v2_x0_5',
-    #'squeezenet1_1',
     'efficientnet_b0'
 ]
 
@@ -57,12 +56,6 @@ MODEL_BLOCKS = {
             'stage4.0', 'stage4.1', 'stage4.2', 'stage4.3'
         ],
     
-    'squeezenet1_1': [
-        'features.3', 'features.4', 'features.5', 
-        'features.6', 'features.7', 'features.8', 
-        'features.9', 'features.10', 'features.11', 'features.12'
-    ],
-    
     'efficientnet_b0': [
         'blocks.0.0', 
         'blocks.1.0', 'blocks.1.1',
@@ -79,7 +72,6 @@ MODEL_BLOCKS = {
 MODEL_PRINT = {
     'resnet18': 'ResNet-18',
     'shufflenet_v2_x0_5': 'ShuffleNetV2 (0.5x)',
-    'squeezenet1_1': 'SqueezeNet 1.1',
     'mobilenetv3_small_050': 'MobileNetV3 Small (0.5x)',
     'efficientnet_b0': 'EfficientNet-B0',
 }
@@ -99,13 +91,6 @@ MODEL_STATS = {
         arch='shufflenet_v2_x0_5', 
         top1=60.55, 
         param=1.36, 
-        backend='pytorch', 
-        type='cnn'
-    ),
-    'squeezenet1_1': dict(
-        arch='squeezenet1_1', 
-        top1=58.19, 
-        param=1.23, 
         backend='pytorch', 
         type='cnn'
     ),

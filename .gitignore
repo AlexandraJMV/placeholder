@@ -45,3 +45,6 @@ Similitud.md
 *.pth
 *.ckpt
 *.csv
+
+mis_similitudes_2/
+reps_folder_2/
