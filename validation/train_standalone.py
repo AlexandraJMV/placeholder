@@ -1,8 +1,13 @@
 # =============================================================================
-# validation/train_standalone.py
+# validation/train_standalone.py — FINAL VERSION (FAIR COMPARISON)
 #
-# Extracts a specific sub-network path from the SuperNetwork and trains it 
-# as a standalone model. 
+# This script trains a single standalone path extracted from the SuperNetwork.
+# Training protocol matches the supernet's --freeze_backbone run exactly:
+#   - All backbone stages (0–3) frozen
+#   - Only stitching layers and classifier heads trained
+#   - BN tracking disabled during training (like supernet.set_bn_tracking(False))
+#   - Same optimizer, LR schedule, AMP, gradient clipping
+#   - Same dataset (ImageNette 160px, 50% subset)
 # =============================================================================
 
 import sys
@@ -25,7 +30,7 @@ sys.path.append(os.getcwd())
 from simple_poc.supernet import SuperNetwork, OutputUnwrapper
 
 # ------------------------------------------------------------------ #
-# Data Loading
+# Data Loading (same as supernet)
 # ------------------------------------------------------------------ #
 def get_imagenette(root='data/imagenette2-160', img_size=160):
     train_dir = os.path.join(root, 'train')
@@ -50,6 +55,7 @@ def get_imagenette(root='data/imagenette2-160', img_size=160):
     trainset = torchvision.datasets.ImageFolder(train_dir, transform_train)
     valset   = torchvision.datasets.ImageFolder(val_dir, transform_val)
     
+    # 50% subset (same as supernet)
     trainset = torch.utils.data.Subset(trainset, range(0, len(trainset), 2))
     
     return trainset, valset
@@ -67,25 +73,22 @@ def set_seed(seed=42):
 # ------------------------------------------------------------------ #
 class StandaloneNetwork(nn.Module):
     """
-    Assembles a standard PyTorch Sequential model by plucking the exact
-    layers required for the specified path out of the initialized SuperNetwork.
-    This safely bypasses all channel-matching complexity.
+    Assembles a standard PyTorch Sequential model by extracting the exact
+    layers required for the specified path from an initialized SuperNetwork.
     """
     def __init__(self, supernet, path):
         super().__init__()
         self.path = path
         modules = []
         
-        # 1. Stage 0
+        # Stage 0
         modules.append(supernet.stages[0][path[0]])
         
-        # 2. Sequential Stitching and subsequent Stages
+        # Subsequent stages + stitching
         for i in range(1, supernet.num_stages):
             prev_idx = path[i - 1]
             curr_idx = path[i]
-            # Add exactly the required stitch layer
             modules.append(supernet.stitches[i - 1][prev_idx][curr_idx])
-            # Add exactly the required backbone block
             modules.append(supernet.stages[i][curr_idx])
             
         self.features = nn.Sequential(*modules)
@@ -123,7 +126,7 @@ def main():
 
     print(f"🚀 Initializing SuperNetwork to harvest path {target_path}...")
     
-    # 1. Initialize SuperNetwork (runs dummy passes & resolves shapes silently)
+    # 1. Initialize SuperNetwork (resolves shapes silently)
     supernet = SuperNetwork(
         plan_path="network_plan.pkl",
         num_classes=10,
@@ -131,17 +134,17 @@ def main():
         stitch_init_mode='ls'
     )
     
-    # 2. Extract strictly the targeted path
+    # 2. Extract the targeted path
     model = StandaloneNetwork(supernet, target_path).to(DEVICE)
     
-    # Free up memory holding unselected blocks in the supernet
+    # Free memory held by supernet
     del supernet
     torch.cuda.empty_cache()
 
     print(f"✅ Standalone Network Assembled. Total Params: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
 
     # ------------------------------------------------------------------ #
-    # DISABLE BN TRACKING DURING TRAINING (matches supernet behavior)
+    # FAIRNESS PATCH 1: Disable BN tracking (matches supernet)
     # ------------------------------------------------------------------ #
     for m in model.modules():
         if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.SyncBatchNorm)):
@@ -151,19 +154,23 @@ def main():
     # Data Setup
     # ------------------------------------------------------------------ #
     trainset, valset = get_imagenette(img_size=160)
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    valloader   = torch.utils.data.DataLoader(valset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    trainloader = torch.utils.data.DataLoader(
+        trainset, batch_size=args.batch_size, shuffle=True,
+        num_workers=4, pin_memory=True)
+    valloader = torch.utils.data.DataLoader(
+        valset, batch_size=args.batch_size, shuffle=False,
+        num_workers=4, pin_memory=True)
 
     # ------------------------------------------------------------------ #
-    # Freeze backbone stages 0-2, unfreeze last stage (matching supernet)
+    # FAIRNESS PATCH 2: Freeze ALL backbone stages (matches supernet --freeze_backbone)
     # ------------------------------------------------------------------ #
     block_modules = [m for m in model.features.modules() if isinstance(m, OutputUnwrapper)]
-    for i, m in enumerate(block_modules):
+    for m in block_modules:
         for p in m.parameters():
-            p.requires_grad = (i == len(block_modules) - 1)   # unfreeze only the last stage
+            p.requires_grad = False
 
     # ------------------------------------------------------------------ #
-    # Separate parameters: stitches/head vs. trainable backbone (last stage)
+    # Separate parameters: stitches/head vs. backbone (backbone will be empty)
     # ------------------------------------------------------------------ #
     stitch_params = []
     backbone_params = []
@@ -183,7 +190,7 @@ def main():
         {'params': backbone_params, 'lr': args.lr * 0.1, 'momentum': 0.9, 'weight_decay': 5e-4}
     ])
 
-    # Remove weight decay from BN layers in both groups
+    # Remove weight decay from BN layers
     for group in optimizer.param_groups:
         group['params'] = [p for p in group['params']
                            if not any(no_weight_decay(m) for m in model.modules()
@@ -193,11 +200,13 @@ def main():
     scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
     criterion = nn.CrossEntropyLoss()
 
+    # ------------------------------------------------------------------ #
     # Training Loop
+    # ------------------------------------------------------------------ #
     metrics = []
     best_val_acc = 0.0
 
-    model.train()   # ensure training mode (BN still uses batch stats because track_running_stats=False)
+    model.train()   # training mode; BN uses batch stats because track_running_stats=False
 
     for epoch in range(args.epochs):
         model.train()
@@ -224,8 +233,6 @@ def main():
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
 
-            # Optional: throttle tqdm updates for extra speed (uncomment if needed)
-            # if total % (args.batch_size * 10) == 0:
             loop.set_postfix(loss=f"{loss.item():.4f}", acc=f"{100.*correct/total:.1f}%")
 
         train_loss = running_loss / len(trainloader)
@@ -265,7 +272,7 @@ def main():
             "lr": current_lr
         })
 
-        # Save metrics to specified output file
+        # Save metrics to file
         os.makedirs(os.path.dirname(args.output_file) or ".", exist_ok=True)
         with open(args.output_file, 'w') as f:
             json.dump(metrics, f, indent=4)
