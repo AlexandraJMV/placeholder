@@ -201,6 +201,7 @@ def main():
     ])
 
     trainset, valset = get_imagenette(img_size=224)
+    trainset = torch.utils.data.Subset(trainset, range(0, len(trainset), 2))
     
     trainloader = torch.utils.data.DataLoader(
         trainset, batch_size=args.batch_size, shuffle=True,
@@ -371,6 +372,7 @@ def main():
         train_loss = running_loss / len(trainloader)
         train_acc  = 100.0 * correct / total
 
+        """
         # FIX: Only validate every 5 epochs to save time, with reduced calibration batches
         if (epoch + 1) % 5 == 0 or epoch == total_epochs - 1:
             val_loss, val_acc, val_std, per_path_accs = validate_supernet(
@@ -386,7 +388,20 @@ def main():
         else:
             val_loss, val_acc, val_std, per_path_accs = 0.0, 0.0, 0.0, []
             print(f"  Val — skipped (runs every 5 epochs)")
-
+        """
+        
+        if epoch == total_epochs - 1:
+            val_loss, val_acc, val_std, per_path_accs = validate_supernet(
+                model, trainloader, valloader, criterion, DEVICE,
+                fixed_paths,
+                use_amp=USE_AMP,
+                calibrate=True,
+                calib_batches=100,   # Reduced from 30 → 5 for efficiency
+            )
+        else:
+            val_loss, val_acc, val_std = 0.0, 0.0, 0.0
+                
+        
         # Restore train mode after validation
         model.train()
         model.set_bn_tracking(False)
