@@ -95,6 +95,9 @@ def parse_args():
     parser.add_argument('--eval_candidates', action='store_true',
                     help='After training, evaluate all paths in candidate_paths.json')
     
+    
+    
+    
     return parser.parse_args()
 
 
@@ -160,6 +163,27 @@ def validate_supernet(model, train_loader, val_loader, criterion, device,
     return (float(np.mean(path_losses)), float(np.mean(path_accs)),
             float(np.std(path_accs)), path_accs)
 
+
+def quick_validate(model, val_loader, criterion, device, path, max_batches=20, use_amp=True):
+    """Quick evaluation on a subset of validation data (no BN calibration)."""
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for i, (inputs, targets) in enumerate(val_loader):
+            if i >= max_batches:
+                break
+            inputs, targets = inputs.to(device), targets.to(device)
+            with torch.amp.autocast('cuda', enabled=use_amp):
+                outputs = model(inputs, path=path)
+                loss = criterion(outputs, targets)
+            total_loss += loss.item()
+            _, predicted = outputs.max(1)
+            correct += predicted.eq(targets).sum().item()
+            total += targets.size(0)
+    return total_loss / min(max_batches, len(val_loader)), 100.0 * correct / total
+
 def main():
     args = parse_args()
     set_seed(42)
@@ -221,11 +245,16 @@ def main():
         matrices_path=args.matrices_path,
     ).to(DEVICE)
 
+    # ------------------------------------------------------------------ #
+    # Freeze backbone if specified 
+    # ------------------------------------------------------------------ #
+
     if args.train_only_stitches or args.freeze_backbone:
-        print("🔒 Freezing backbone blocks — training stitches only")
+        print("🔒 Freezing backbone blocks (stages 0-2) — training stitches and last stage only")
         model.set_backbone_requires_grad(False)
+        # Unfreeze the last stage (stage index = self.num_stages - 1)
+        model.set_stage_requires_grad(model.num_stages - 1, True)
     else:
-        # Fine‑tune backbone with lower LR
         model.set_backbone_requires_grad(True)
         print("⚠️  Backbone will be fine‑tuned (lower LR applied)")
         
@@ -328,7 +357,7 @@ def main():
     sampling_rng = random.Random()
     sampling_rng.seed(42 + start_epoch)  # deterministic per-epoch but isolated
 
-    model.set_bn_tracking(False)   # Disable running stats during training
+    model.set_bn_tracking(True)   # Disable running stats during training
     
     for epoch in range(start_epoch, total_epochs):
         model.train()
@@ -372,8 +401,23 @@ def main():
         train_loss = running_loss / len(trainloader)
         train_acc  = 100.0 * correct / total
         
-        ### 
-        # Initialize validation variables (in case validation is skipped)
+        
+        
+        # --------------------------------------------------------------- #
+        # Quick validation every 2 epochs
+        # --------------------------------------------------------------- #
+        
+        if epoch % 2 == 0 or epoch == total_epochs - 1:
+            # Use a fixed path, e.g., all indices 0 (or the first homogeneous path)
+            quick_path = [0] * model.num_stages
+            quick_loss, quick_acc = quick_validate(model, valloader, criterion, DEVICE, quick_path, max_batches=20, use_amp=USE_AMP)
+            print(f"  Quick val (path {quick_path}) — Loss: {quick_loss:.4f} | Acc: {quick_acc:.2f}%")
+        else:
+            quick_loss, quick_acc = 0.0, 0.0
+        
+        # ------------------------------------------------------------------ #
+        # Full validation on fixed paths at the end of training
+        # ------------------------------------------------------------------ #
         val_loss, val_acc, val_std = 0.0, 0.0, 0.0
         per_path_accs = []
 
@@ -388,7 +432,7 @@ def main():
         
         # Restore train mode after validation
         model.train()
-        model.set_bn_tracking(False)
+        model.set_bn_tracking(True)
         scheduler.step()
 
         current_lr = optimizer.param_groups[0]['lr']

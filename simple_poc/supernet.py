@@ -359,6 +359,10 @@ class SuperNetwork(nn.Module):
         input_args       = [input_node_name] if start_idx > 0 else []
         return create_sub_network(base_model, input_args, [output_node_name])
 
+    def set_stage_requires_grad(self, stage_idx, requires_grad=True):
+        """Set requires_grad for all parameters in a specific stage."""
+        for param in self.stages[stage_idx].parameters():
+            param.requires_grad = requires_grad
     # ------------------------------------------------------------------ #
     # Forward
     # ------------------------------------------------------------------ #
