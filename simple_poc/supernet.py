@@ -362,19 +362,23 @@ class SuperNetwork(nn.Module):
     # ------------------------------------------------------------------ #
     # Forward
     # ------------------------------------------------------------------ #
-
+    
     def forward(self, x, path=None):
         if path is None:
-            path = [torch.randint(0, c, (1,)).item()
-                    for c in self.choices_per_stage]
+            path = [torch.randint(0, c, (1,)).item() for c in self.choices_per_stage]
 
-        out = self.stages[0][path[0]](x)
+        # First stage: inference_mode if backbone is frozen
+        with torch.inference_mode(mode=self.freeze_backbone):
+            out = self.stages[0][path[0]](x)
 
         for i in range(1, self.num_stages):
             prev_idx = path[i - 1]
             curr_idx = path[i]
+            # Stitching layers always need gradients → run normally
             out = self.stitches[i - 1][prev_idx][curr_idx](out)
-            out = self.stages[i][curr_idx](out)
+            # Next stage: inference_mode if frozen
+            with torch.inference_mode(mode=self.freeze_backbone):
+                out = self.stages[i][curr_idx](out)
 
         out = self.global_pool(out)
         out = self.heads[path[-1]](out)

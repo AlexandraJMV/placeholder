@@ -33,12 +33,11 @@ from simple_poc.supernet import SuperNetwork
 # ------------------------------------------------------------------ #
 
 # Función para cargar ImageNette 
-def get_imagenette(root='data/imagenette2-160', img_size=224):
-    # ImageNette structure: root/train and root/val
+def get_imagenette(root='data/imagenette2-160', img_size=160):
     train_dir = os.path.join(root, 'train')
     val_dir   = os.path.join(root, 'val')
     
-    # ImageNet normalization (since models are pretrained on ImageNet)
+    # ImageNet normalization (models pretrained on ImageNet)
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
     
@@ -49,7 +48,7 @@ def get_imagenette(root='data/imagenette2-160', img_size=224):
         normalize,
     ])
     transform_val = transforms.Compose([
-        transforms.Resize(int(img_size * 1.14)),  # slightly larger for center crop
+        transforms.Resize(int(img_size * 1.14)),  # 182 for 160
         transforms.CenterCrop(img_size),
         transforms.ToTensor(),
         normalize,
@@ -58,6 +57,7 @@ def get_imagenette(root='data/imagenette2-160', img_size=224):
     trainset = torchvision.datasets.ImageFolder(train_dir, transform_train)
     valset   = torchvision.datasets.ImageFolder(val_dir, transform_val)
     return trainset, valset
+
 
 # Agregar función para establecer semillas de manera consistente
 def set_seed(seed=42):
@@ -199,8 +199,8 @@ def main():
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
-
-    trainset, valset = get_imagenette(img_size=224)
+    IMG_SIZE = 160
+    trainset, valset = get_imagenette(img_size=IMG_SIZE)
     trainset = torch.utils.data.Subset(trainset, range(0, len(trainset), 2))
     
     trainloader = torch.utils.data.DataLoader(
@@ -216,7 +216,7 @@ def main():
     model = SuperNetwork( 
         plan_path="network_plan.pkl",
         num_classes=10,
-        input_size=224,
+        input_size=IMG_SIZE,
         stitch_init_mode=args.init_mode,
         matrices_path=args.matrices_path,
     ).to(DEVICE)
