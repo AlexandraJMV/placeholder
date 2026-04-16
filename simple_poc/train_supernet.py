@@ -371,36 +371,20 @@ def main():
 
         train_loss = running_loss / len(trainloader)
         train_acc  = 100.0 * correct / total
-
-        """
-        # FIX: Only validate every 5 epochs to save time, with reduced calibration batches
-        if (epoch + 1) % 5 == 0 or epoch == total_epochs - 1:
-            val_loss, val_acc, val_std, per_path_accs = validate_supernet(
-                model, trainloader, valloader, criterion, DEVICE,
-                fixed_paths,
-                use_amp=USE_AMP,
-                calibrate=True,
-                calib_batches=100,   # Reduced from 30 → 5 for efficiency
-            )
-            print(f"  Val — Loss: {val_loss:.4f} | Acc: {val_acc:.2f}% ± {val_std:.2f}%")
-            if per_path_accs:
-                print(f"  Per-path accs: {[f'{a:.1f}' for a in per_path_accs]}")
-        else:
-            val_loss, val_acc, val_std, per_path_accs = 0.0, 0.0, 0.0, []
-            print(f"  Val — skipped (runs every 5 epochs)")
-        """
         
+        ### 
+        # Initialize validation variables (in case validation is skipped)
+        val_loss, val_acc, val_std = 0.0, 0.0, 0.0
+        per_path_accs = []
+
         if epoch == total_epochs - 1:
             val_loss, val_acc, val_std, per_path_accs = validate_supernet(
                 model, trainloader, valloader, criterion, DEVICE,
                 fixed_paths,
                 use_amp=USE_AMP,
                 calibrate=True,
-                calib_batches=100,   # Reduced from 30 → 5 for efficiency
-            )
-        else:
-            val_loss, val_acc, val_std = 0.0, 0.0, 0.0
-                
+                calib_batches=100,
+            )      
         
         # Restore train mode after validation
         model.train()
@@ -412,12 +396,12 @@ def main():
         print(f"\nEpoch {epoch+1}/{total_epochs}")
         print(f"  Train  — Loss: {train_loss:.4f} | Acc: {train_acc:.2f}%")
         print(f"  Val    — Loss: {val_loss:.4f}  | "
-              f"Acc: {val_acc:.2f}% ± {val_std:.2f}%")
+            f"Acc: {val_acc:.2f}% ± {val_std:.2f}%")
         print(f"  LR: {current_lr:.6f}")
         if per_path_accs:
             print(f"  Per-path accs: {[f'{a:.1f}' for a in per_path_accs]}")
 
-        # Save metrics
+        # Save metrics (per_path_accs is defined)
         metrics.append({
             "epoch":         epoch + 1,
             "train_loss":    round(train_loss, 5),
