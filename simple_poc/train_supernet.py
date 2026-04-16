@@ -90,6 +90,11 @@ def parse_args():
     parser.add_argument('--freeze_backbone',    action='store_true',
                         help="Freeze backbone parameters (except stitches). "
                              "Overrides --train_only_stitches behavior.")
+    
+    # FIX: New flag to evaluate candidate paths after training
+    parser.add_argument('--eval_candidates', action='store_true',
+                    help='After training, evaluate all paths in candidate_paths.json')
+    
     return parser.parse_args()
 
 
@@ -431,6 +436,26 @@ def main():
 
     print(f"\n✅ Training complete. Best val acc: {best_val_acc:.2f}%")
 
+    # -------------------------------------------------------------------- # 
+    # Candidate path evaluation after training 
+    # -------------------------------------------------------------------- #
+    
+    if args.eval_candidates and os.path.exists('candidate_paths.json'):
+        print("\n🔍 Evaluating all candidate paths...")
+        with open('candidate_paths.json', 'r') as f:
+            candidate_paths = json.load(f)
+        
+        results = {}
+        for i, path in enumerate(candidate_paths):
+            print(f"  Path {i+1}/{len(candidate_paths)}: {path}")
+            model.calibrate_bn(trainloader, path, n_batches=100, device=DEVICE)
+            loss, acc = validate_single_path(model, valloader, criterion, DEVICE, path, use_amp=USE_AMP)
+            results[str(path)] = acc
+            print(f"    Acc: {acc:.2f}%")
+        
+        with open('supernet_candidate_accs.json', 'w') as f:
+            json.dump(results, f, indent=2)
+        print("Saved supernet accuracies to supernet_candidate_accs.json")
 
 if __name__ == "__main__":
     main()
