@@ -23,7 +23,6 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.getcwd(), 'third_package'))
 sys.path.append(os.getcwd())
 from simple_poc.supernet import SuperNetwork, OutputUnwrapper
-from simple_poc.supernet import SuperNetwork
 
 # ------------------------------------------------------------------ #
 # Data Loading
@@ -141,19 +140,23 @@ def main():
 
     print(f"✅ Standalone Network Assembled. Total Params: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
 
-    # 3. Data Setup
+    # ------------------------------------------------------------------ #
+    # DISABLE BN TRACKING DURING TRAINING (matches supernet behavior)
+    # ------------------------------------------------------------------ #
+    for m in model.modules():
+        if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.SyncBatchNorm)):
+            m.track_running_stats = False
+
+    # ------------------------------------------------------------------ #
+    # Data Setup
+    # ------------------------------------------------------------------ #
     trainset, valset = get_imagenette(img_size=160)
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
     valloader   = torch.utils.data.DataLoader(valset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-    ###
-    
     # ------------------------------------------------------------------ #
     # Freeze backbone stages 0-2, unfreeze last stage (matching supernet)
     # ------------------------------------------------------------------ #
-    # Identify backbone blocks inside the features Sequential.
-    # They are wrapped in OutputUnwrapper, so we find those modules.
-    from simple_poc.supernet import OutputUnwrapper
     block_modules = [m for m in model.features.modules() if isinstance(m, OutputUnwrapper)]
     for i, m in enumerate(block_modules):
         for p in m.parameters():
@@ -167,7 +170,6 @@ def main():
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        # Stitch layers have 'stitch' in name; head is 'head' or 'linear'
         if 'stitch' in name or 'head' in name or 'linear' in name:
             stitch_params.append(param)
         else:
@@ -187,17 +189,15 @@ def main():
                            if not any(no_weight_decay(m) for m in model.modules()
                                       if hasattr(m, 'weight') and m.weight is p)]
     
-    ###
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-5)
     scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
     criterion = nn.CrossEntropyLoss()
 
-    # 5. Training Loop
+    # Training Loop
     metrics = []
     best_val_acc = 0.0
 
-    # Ensure BN tracking is ON (unlike SuperNetwork training)
-    model.train() 
+    model.train()   # ensure training mode (BN still uses batch stats because track_running_stats=False)
 
     for epoch in range(args.epochs):
         model.train()
@@ -224,6 +224,8 @@ def main():
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
 
+            # Optional: throttle tqdm updates for extra speed (uncomment if needed)
+            # if total % (args.batch_size * 10) == 0:
             loop.set_postfix(loss=f"{loss.item():.4f}", acc=f"{100.*correct/total:.1f}%")
 
         train_loss = running_loss / len(trainloader)
