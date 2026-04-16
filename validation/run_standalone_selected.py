@@ -1,4 +1,3 @@
-# run_standalone_selected.py
 import json, subprocess, os
 
 selected_paths = [
@@ -17,8 +16,8 @@ for i, path in enumerate(selected_paths):
         continue
     print(f"Training {i+1}/10: {path}")
     subprocess.run([
-        "python", "train_standalone.py",
-        "--path", str(path),
+        "python", "validation/train_standalone.py",
+        "--path", path_str,
         "--epochs", "50",
         "--lr", "0.01",
         "--batch_size", "8",
