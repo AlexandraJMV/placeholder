@@ -144,13 +144,6 @@ def main():
     print(f"✅ Standalone Network Assembled. Total Params: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
 
     # ------------------------------------------------------------------ #
-    # FAIRNESS PATCH 1: Disable BN tracking (matches supernet)
-    # ------------------------------------------------------------------ #
-    for m in model.modules():
-        if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.SyncBatchNorm)):
-            m.track_running_stats = False
-
-    # ------------------------------------------------------------------ #
     # Data Setup
     # ------------------------------------------------------------------ #
     trainset, valset = get_imagenette(img_size=160)
