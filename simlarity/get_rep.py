@@ -122,13 +122,12 @@ def main():
     parser.add_argument('--model', type=str, default=None, help='Modelo específico o None para todo el Zoo')
     
     # Configuración de dataset y parámetros de procesamiento
-    parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'imagenet'])
-    
+    parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'imagenet', 'imagenette'])
     # Configuración de ruta, tamaño de batch, directorio de guardado y tamaño de imagen
     parser.add_argument('--data_path', type=str, default='./data')     # Ruta base para los datos, se ajustará según el dataset seleccionado
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--save_dir', type=str, default='reps_folder')
-    parser.add_argument('--img_size', type=int, default=224)            # Tamaño de imagen para modelos que requieren entrada de 224x224, se ajustará según el modelo seleccionado
+    parser.add_argument('--img_size', type=int, default=160)            # Tamaño de imagen para modelos que requieren entrada de 224x224, se ajustará según el modelo seleccionado
     
     # Analiza los argumentos proporcionados por el usuario
     args = parser.parse_args()
@@ -147,10 +146,15 @@ def main():
     ])
 
     # Carga el dataset según la selección del usuario, ajustando la ruta y las transformaciones
+    
+    # Carga el dataset según la selección del usuario, ajustando la ruta y las transformaciones
     if args.dataset == 'cifar10':
         dataset = datasets.CIFAR10(root=args.data_path, train=False, download=True, transform=transform)
-    else:
+    elif args.dataset in ['imagenet', 'imagenette']:
+        # Imagenette follows the standard ImageNet structure; features are extracted using the validation split.
         dataset = datasets.ImageFolder(root=os.path.join(args.data_path, 'val'), transform=transform)
+    else:
+        raise ValueError(f"Dataset configuration for '{args.dataset}' is undefined.")    
 
     # Configura el DataLoader para iterar sobre el dataset con el tamaño de batch especificado
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
