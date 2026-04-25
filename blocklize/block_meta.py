@@ -18,7 +18,6 @@ import json
 MODEL_ZOO = [
     'resnet18',
     'mobilenetv3_small_050',
-    'shufflenet_v2_x0_5',
     'efficientnet_b0'
 ]
 
@@ -49,12 +48,6 @@ MODEL_BLOCKS = {
         'blocks.4.0', 'blocks.4.1', 'blocks.4.2',
         'blocks.5.0'
     ],
-
-    'shufflenet_v2_x0_5': [
-            'stage2.0', 'stage2.1', 'stage2.2', 'stage2.3',
-            'stage3.0', 'stage3.1', 'stage3.2', 'stage3.3', 'stage3.4', 'stage3.5', 'stage3.6', 'stage3.7',
-            'stage4.0', 'stage4.1', 'stage4.2', 'stage4.3'
-        ],
     
     'efficientnet_b0': [
         'blocks.0.0', 
@@ -71,7 +64,6 @@ MODEL_BLOCKS = {
 # Se usa simplemente para imprimir nombres en los logs y gráficas de manera más amigable
 MODEL_PRINT = {
     'resnet18': 'ResNet-18',
-    'shufflenet_v2_x0_5': 'ShuffleNetV2 (0.5x)',
     'mobilenetv3_small_050': 'MobileNetV3 Small (0.5x)',
     'efficientnet_b0': 'EfficientNet-B0',
 }
@@ -84,13 +76,6 @@ MODEL_STATS = {
         arch='resnet18', 
         top1=69.76, 
         param=11.69, 
-        backend='pytorch', 
-        type='cnn'
-    ),
-    'shufflenet_v2_x0_5': dict(
-        arch='shufflenet_v2_x0_5', 
-        top1=60.55, 
-        param=1.36, 
         backend='pytorch', 
         type='cnn'
     ),

@@ -30,8 +30,11 @@ def similarity_pair_batch_cka(data1, data2, bs=2048):
         for i, (k1, v1) in enumerate(feat1.items()):
             for j, (k2, v2) in enumerate(feat2.items()):
                 cka_from_examples = cka_linear_torch(
-                    torch.tensor(v1[start:end]).cuda(),
-                    torch.tensor(v2[start:end]).cuda())
+                    #
+                    v1[start:end].clone().detach().cuda(),
+                    v2[start:end].clone().detach().cuda()
+                    #
+                    )
                 cka_map[b_id, i, j] = cka_from_examples
     return cka_map.mean(0).detach().cpu().numpy()
 

@@ -21,13 +21,22 @@ from blocklize.block_meta import MODEL_INOUT_SHAPE as _DEFAULT_SHAPES
 MODEL_INOUT_SHAPE = _DEFAULT_SHAPES
 
 def update_global_shapes(json_path):
-    """Updates the global MODEL_INOUT_SHAPE with data from a JSON file."""
+    """Updates the global MODEL_INOUT_SHAPE with data from a JSON file.
+    
+    Updates BOTH the local utils module reference AND blocklize.block_meta
+    to ensure all import paths see the same data.
+    """
     global MODEL_INOUT_SHAPE
-    import json
+    import blocklize.block_meta as bm
     with open(json_path, 'r') as f:
-        MODEL_INOUT_SHAPE = json.load(f)
+        data = json.load(f)
+    # Rebind both module-level references so Block.get_inout_size() and
+    # any direct importer of blocklize.block_meta see the same shape dict.
+    MODEL_INOUT_SHAPE = data
+    bm.MODEL_INOUT_SHAPE = data
     print(f"Global MODEL_INOUT_SHAPE updated from {json_path}")
-
+    
+    
 def create_feature_dict(path):
     result_dict = dict()
     for name in os.listdir(path):
@@ -198,33 +207,41 @@ class Block_Sim:
         self.sim_dict = sim_dict
 
     def get_sim(self, block1, block2):
-        if isinstance(block1, Block) and isinstance(block2, Block):
-            # print(block1, block2)
-            key = f'{block1.model_name}.{block2.model_name}'
-            if key in self.sim_dict.keys():
-                if block1 == block2:
-                    block_sim = 1
-                elif block1.model_name == block1.model_name and block1.block_index != block2.block_index:
-                    block_sim = 0
-                else:
-                    sim_map = self.sim_dict[key]
-                    try:
-                        block_sim = (sim_map[block1.node_list[0], block2.node_list[0]] +
-                                     sim_map[block1.node_list[-1], block2.node_list[-1]])
-                    except:
-                        AssertionError('The functional similarity can not be computed')
-            else:
-                block_sim = 0
+        if not (isinstance(block1, Block) and isinstance(block2, Block)):
+            raise TypeError('block1 and block2 must be Block instances')
 
-            return block_sim
-        else:
-            TypeError('block 1 and block 2 must be Block instance')
+        key = f'{block1.model_name}.{block2.model_name}'
+        if key not in self.sim_dict:
+            return 0
 
+        if block1 == block2:
+            return 1
+        # FIX: was `block1.model_name == block1.model_name` (tautology).
+        # Correct logic: zero out cross-stage similarity within the same model
+        # to prevent a block being assigned to a functionally misaligned stage.
+        if block1.model_name == block2.model_name and \
+                block1.block_index != block2.block_index:
+            return 0
 
+        sim_map = self.sim_dict[key]
+        # FIX: convert numpy.int64 indices to Python int to guarantee
+        # compatibility with both numpy matrix and torch.Tensor indexing.
+        i0, i1 = int(block1.node_list[0]),  int(block1.node_list[-1])
+        j0, j1 = int(block2.node_list[0]),  int(block2.node_list[-1])
+        try:
+            block_sim = float(sim_map[i0, j0]) + float(sim_map[i1, j1])
+        except (IndexError, KeyError):
+            raise AssertionError(
+                f'Functional similarity cannot be computed for blocks '
+                f'{block1} and {block2}: indices ({i0},{j0}),({i1},{j1}) '
+                f'out of range for sim_map shape {sim_map.shape}'
+            )
+        return block_sim        
+    
 class Block_Assign:
     def __init__(self, assignment_index, block_split_dict, centers):
         self.block2center = dict()
-        self.center2block = [[c]for c in centers]
+        self.center2block = [[] for _ in centers]
         self.centers = centers
 
         for m, model_name in enumerate(MODEL_ZOO):
@@ -234,7 +251,12 @@ class Block_Assign:
                 block.group_id = center_index
                 self.block2center[model_name][j] = centers[center_index]
                 self.center2block[center_index].append(block)
-
+        # Ensure each group contains its designated center block exactly once
+        for idx, center in enumerate(centers):
+            if center not in self.center2block[idx]:
+                self.center2block[idx].insert(0, center)
+        
+        
     def get_center(self, block):
         return self.block2center[block.model_name][block.block_index]
 
