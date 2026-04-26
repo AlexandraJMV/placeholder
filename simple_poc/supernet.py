@@ -1,19 +1,3 @@
-# =============================================================================
-# supernet.py  — MERGED (original + refactored)
-#
-# From ORIGINAL (preserved):
-#   - shapes_db (MODEL_INOUT_SHAPE.json) for native input channel detection
-#   - StitchLayer structure and initialization logic
-#
-# From REFACTORED (added):
-#   - AdaptiveGlobalPool: handles CNN (B,C,H,W) and Transformer (B,L,C)
-#   - calibrate_bn(): BN recalibration per-path before evaluation
-#   - sample_path(rng): isolated RNG to avoid corrupting global state
-#   - _run_dummy_pass(): auto-corrects channel mismatches as last resort
-#   - shapes_db is optional — falls back to auto-detection if JSON missing
-#   - input_size used for spatial dims (not ImageNet scale from shapes_db)
-# =============================================================================
-
 import sys
 import os
 import pickle
@@ -22,14 +6,13 @@ import torch.nn as nn
 import json
 import math
 import re
+import numpy as np
 
 sys.path.insert(0, os.path.join(os.getcwd(), 'third_package'))
 sys.path.append(os.getcwd())
 
 from blocklize import MODEL_BLOCKS
 from simlarity.feature_extraction import create_sub_network
-from simlarity.utils import Block, Block_Assign
-
 
 def get_block_type(model_name):
     transformers = ['vit', 'swin', 'deit', 'tnt']
@@ -37,7 +20,6 @@ def get_block_type(model_name):
         if t in model_name.lower():
             return 'TRANS'
     return 'CNN'
-
 
 class OutputUnwrapper(nn.Module):
     def __init__(self, module):
@@ -51,9 +33,7 @@ class OutputUnwrapper(nn.Module):
         if isinstance(out, tuple): out = out[0]
         return out
 
-
 class AdaptiveGlobalPool(nn.Module):
-    """Handles both CNN (B,C,H,W) and Transformer (B,L,C) outputs."""
     def forward(self, x):
         if x.dim() == 4:
             return x.mean(dim=[2, 3])
@@ -63,7 +43,6 @@ class AdaptiveGlobalPool(nn.Module):
             return x
         else:
             raise ValueError(f"Unexpected tensor shape: {x.shape}")
-
 
 class StitchLayer(nn.Module):
     def __init__(self, src_cfg, dst_cfg, init_mode='ls', weight_matrix=None):
@@ -76,7 +55,6 @@ class StitchLayer(nn.Module):
 
         layers = []
 
-        # Spatial resolution adjustment
         if in_res is not None and out_res is not None:
             if in_res > out_res:
                 stride = in_res // out_res
@@ -93,7 +71,6 @@ class StitchLayer(nn.Module):
             layers.append(nn.LeakyReLU(negative_slope=0.1, inplace=True))
             if self.mode == 'CNN-to-TRANS':
                 layers.append(nn.Flatten(2))
-        #
         elif self.mode == 'TRANS-to-CNN':
             if out_res is not None:
                 class Unflatten(nn.Module):
@@ -103,7 +80,6 @@ class StitchLayer(nn.Module):
                     def forward(self, x):
                         B, L, C = x.shape
                         expected_L = self.h * self.w
-                        # Strip [CLS] or [DIST] tokens safely (assumes tokens are prepended)
                         if L > expected_L:
                             x = x[:, -expected_L:, :]
                         return x.transpose(1, 2).reshape(B, C, self.h, self.w)
@@ -118,7 +94,6 @@ class StitchLayer(nn.Module):
             self.linear = nn.Linear(self.in_ch, self.out_ch)
             layers.append(self.linear)
             layers.append(nn.LeakyReLU(negative_slope=0.1, inplace=True))
-
         else:
             raise NotImplementedError(f"Unknown stitch mode: {self.mode}")
 
@@ -127,11 +102,9 @@ class StitchLayer(nn.Module):
 
     def _apply_init(self, mode, weight_matrix):
         target = getattr(self, 'conv', None) or getattr(self, 'linear', None)
-        if target is None:
-            return
+        if target is None: return
         if mode == 'random':
-            nn.init.kaiming_normal_(target.weight, mode='fan_out',
-                                    nonlinearity='leaky_relu')
+            nn.init.kaiming_normal_(target.weight, mode='fan_out', nonlinearity='leaky_relu')
         elif mode == 'ls':
             if weight_matrix is not None:
                 with torch.no_grad():
@@ -141,321 +114,184 @@ class StitchLayer(nn.Module):
                     target.weight.copy_(w)
             else:
                 nn.init.orthogonal_(target.weight)
-                with torch.no_grad():
-                    target.weight.mul_(math.sqrt(2))
+                with torch.no_grad(): target.weight.mul_(math.sqrt(2))
 
     def forward(self, x):
         return self.op(x)
 
-
 class SuperNetwork(nn.Module):
-    def __init__(self, plan_path, num_classes=10, input_size=32,
-                 stitch_init_mode='ls', matrices_path=None):
+    def __init__(self, plan_path, num_classes=10, input_size=160, stitch_init_mode='ls', matrices_path=None):
         super().__init__()
         print(f">>> Assembling SuperNetwork (init={stitch_init_mode}, input={input_size})...")
 
         self.stitch_init_mode = stitch_init_mode
         self.input_size       = input_size
         self.matrices         = {}
+        self.freeze_backbone  = False
 
-        self.freeze_backbone = False
         if stitch_init_mode == 'ls' and matrices_path and os.path.exists(matrices_path):
-            print(f"   Loading transform matrices from {matrices_path}...")
-            with open(matrices_path, 'rb') as f:
-                self.matrices = pickle.load(f)
+            with open(matrices_path, 'rb') as f: self.matrices = pickle.load(f)
 
         with open(plan_path, 'rb') as f:
             self.plan = pickle.load(f)
 
         self.num_stages       = len(self.plan.center2block)
         self.choices_per_stage = [len(opts) for opts in self.plan.center2block]
-    
         self.stages   = nn.ModuleList()
         self.stitches = nn.ModuleList()
 
-        # Load shapes_db — gives native input channels per block (optional)
-        shapes_db      = {}
+        shapes_db = {}
         shapes_db_path = "tools/MODEL_INOUT_SHAPE.json"
         if os.path.exists(shapes_db_path):
-            with open(shapes_db_path) as f:
-                shapes_db = json.load(f)
-            print(f"   shapes_db loaded ✅")
-        else:
-            print(f"   ⚠️  shapes_db not found — will auto-detect input channels")
+            with open(shapes_db_path) as f: shapes_db = json.load(f)
 
         stage_infos = []
-        dummy_input = torch.randn(1, 3, input_size, input_size)
 
         for i, stage_blocks in enumerate(self.plan.center2block):
             print(f"  -> Building Stage {i} ({len(stage_blocks)} choices)...")
             current_stage_modules = nn.ModuleList()
             current_stage_infos   = []
+            
+            # RESOLUTION CHAINING FIX: Inherit spatial dimensions from previous topological stage
+            if i == 0:
+                stage_in_res = input_size
+            else:
+                prev_resolutions = [info['out_res'] for info in stage_infos[i-1] if 'out_res' in info]
+                stage_in_res = max(set(prev_resolutions), key=prev_resolutions.count)
 
             for block_obj in stage_blocks:
-                try:
-                    raw_sub   = self._extract_submodule(block_obj)
-                    sub_model = OutputUnwrapper(raw_sub)
-                    b_type    = get_block_type(block_obj.model_name)
+                raw_sub   = self._extract_submodule(block_obj)
+                sub_model = OutputUnwrapper(raw_sub)
+                b_type    = get_block_type(block_obj.model_name)
 
-                    # ── Get native input channels ────────────────────────────
-                    # shapes_db is the reliable source; fallback to inspection
-                    if shapes_db and block_obj.model_name in shapes_db:
-                        start_node = MODEL_BLOCKS[block_obj.model_name][block_obj.node_list[0]]
-                        raw_shape  = shapes_db[block_obj.model_name]['in_size'][start_node]
-                        if len(raw_shape) == 4:
-                            real_in_ch = raw_shape[1]
-                        else:
-                            real_in_ch = raw_shape[0]
-                    else:
-                        real_in_ch, _ = self._get_native_in_channels(raw_sub)
+                if shapes_db and block_obj.model_name in shapes_db:
+                    start_node = MODEL_BLOCKS[block_obj.model_name][block_obj.node_list[0]]
+                    raw_shape  = shapes_db[block_obj.model_name]['in_size'][start_node]
+                    real_in_ch = raw_shape[1] if len(raw_shape) == 4 else raw_shape[0]
+                else:
+                    real_in_ch, _ = self._get_native_in_channels(raw_sub)
 
-                    # Blocks starting at node 0 receive the raw image
-                    if block_obj.node_list[0] == 0:
-                        real_in_ch = 3
+                if block_obj.node_list[0] == 0:
+                    real_in_ch = 3
 
-                    # Always use actual input_size for spatial (not ImageNet scale)
-                    real_in_res = input_size
+                real_in_res = stage_in_res
 
-                    # ── Stage 0: add stem stitch if block doesn't expect 3ch ─
-                    if i == 0 and real_in_ch != 3:
-                        src_cfg = {'type': 'CNN', 'ch': 3,           'res': input_size}
-                        dst_cfg = {'type': b_type, 'ch': real_in_ch, 'res': input_size}
-                        matrix  = self._get_matrix('input', block_obj.model_name)
-                        stem    = StitchLayer(src_cfg, dst_cfg,
-                                             init_mode=self.stitch_init_mode,
-                                             weight_matrix=matrix)
-                        sub_model   = nn.Sequential(stem, sub_model)
-                        real_in_ch  = 3
-                        real_in_res = input_size
+                if i == 0 and real_in_ch != 3:
+                    src_cfg = {'type': 'CNN', 'ch': 3, 'res': input_size}
+                    dst_cfg = {'type': b_type, 'ch': real_in_ch, 'res': input_size}
+                    matrix  = self._get_matrix('input', block_obj.model_name)
+                    stem    = StitchLayer(src_cfg, dst_cfg, init_mode=self.stitch_init_mode, weight_matrix=matrix)
+                    sub_model   = nn.Sequential(stem, sub_model)
+                    real_in_ch  = 3
 
-                    current_stage_modules.append(sub_model)
+                current_stage_modules.append(sub_model)
+                out_t, real_in_ch = self._run_dummy_pass(sub_model, real_in_ch, real_in_res, b_type)
 
-                    # ── Dummy forward to discover output shape ───────────────
-                    # _run_dummy_pass auto-corrects channel mismatches
-                    out_t, real_in_ch = self._run_dummy_pass(
-                        sub_model, real_in_ch, real_in_res, b_type)
+                info = {'type': b_type, 'in_ch': real_in_ch, 'in_res': real_in_res, 'model_name': block_obj.model_name}
+                if out_t.dim() == 4:
+                    info['out_ch'], info['out_res'] = out_t.shape[1], out_t.shape[2]
+                elif out_t.dim() == 3:
+                    info['out_ch'], L = out_t.shape[2], out_t.shape[1]
+                    res = math.isqrt(L) if math.isqrt(L)**2 == L else int((L-1)**0.5) if math.isqrt(L-1)**2 == L-1 else int((L-2)**0.5) if math.isqrt(L-2)**2 == L-2 else int(L**0.5)
+                    info['out_res'], info['seq_len'] = res, L
+                else:
+                    raise ValueError(f"Unexpected output dim {out_t.dim()}")
 
-                    info = {
-                        'type':       b_type,
-                        'in_ch':      real_in_ch,
-                        'in_res':     real_in_res,
-                        'model_name': block_obj.model_name,
-                    }
-                    if out_t.dim() == 4:
-                        info['out_ch']  = out_t.shape[1]
-                        info['out_res'] = out_t.shape[2]
-                    ##
-                    
-                    # Replace the out_t.dim() == 3 block in SuperNetwork.__init__
-                    elif out_t.dim() == 3:
-                        info['out_ch']  = out_t.shape[2]
-                        L = out_t.shape[1]
-                        
-                        # Deduce spatial resolution accounting for up to 2 extra tokens
-                        if math.isqrt(L)**2 == L:
-                            res = math.isqrt(L)
-                        elif math.isqrt(L - 1)**2 == L - 1:
-                            res = math.isqrt(L - 1)
-                        elif math.isqrt(L - 2)**2 == L - 2:
-                            res = math.isqrt(L - 2)
-                        else:
-                            res = int(L ** 0.5) # Fallback
-                            
-                        info['out_res'] = res
-                        info['seq_len'] = L
-                    
-                    else:
-                        raise ValueError(f"Unexpected output dim {out_t.dim()} "
-                                         f"from {block_obj.model_name}")
-
-                    current_stage_infos.append(info)
-                    print(f"     Block {block_obj.model_name}: "
-                          f"in_ch={real_in_ch}, out_shape={tuple(out_t.shape[1:])}")
-
-                except Exception as e:
-                    print(f"  ERROR in block {block_obj.model_name}: {e}")
-                    raise
+                current_stage_infos.append(info)
+                print(f"     Block {block_obj.model_name}: in_ch={real_in_ch}, out_shape={tuple(out_t.shape[1:])}")
 
             self.stages.append(current_stage_modules)
             stage_infos.append(current_stage_infos)
 
-        # Build stitching layers
         for i in range(self.num_stages - 1):
-            print(f"  -> Stitching Stage {i} -> Stage {i+1}...")
             stage_stitches = nn.ModuleList()
-            src_infos = stage_infos[i]
-            dst_infos = stage_infos[i + 1]
-
-            for src_info in src_infos:
+            for src_info in stage_infos[i]:
                 row_stitches = nn.ModuleList()
-                for dst_info in dst_infos:
-                    s_cfg = {'type': src_info['type'],
-                             'ch':   src_info['out_ch'],
-                             'res':  src_info.get('out_res')}
-                    d_cfg = {'type': dst_info['type'],
-                             'ch':   dst_info['in_ch'],
-                             'res':  dst_info.get('in_res')}
-                    matrix = self._get_matrix(src_info['model_name'],
-                                              dst_info['model_name'])
-                    stitch = StitchLayer(s_cfg, d_cfg,
-                                         init_mode=self.stitch_init_mode,
-                                         weight_matrix=matrix)
-                    row_stitches.append(stitch)
+                for dst_info in stage_infos[i + 1]:
+                    s_cfg = {'type': src_info['type'], 'ch': src_info['out_ch'], 'res': src_info.get('out_res')}
+                    d_cfg = {'type': dst_info['type'], 'ch': dst_info['in_ch'], 'res': dst_info.get('in_res')}
+                    matrix = self._get_matrix(src_info['model_name'], dst_info['model_name'])
+                    row_stitches.append(StitchLayer(s_cfg, d_cfg, init_mode=self.stitch_init_mode, weight_matrix=matrix))
                 stage_stitches.append(row_stitches)
             self.stitches.append(stage_stitches)
 
         self.global_pool = AdaptiveGlobalPool()
-
-        self.heads = nn.ModuleList()
-        for info in stage_infos[-1]:
-            self.heads.append(nn.Linear(info['out_ch'], num_classes))
-
-        total_params = sum(p.numel() for p in self.parameters()) / 1e6
-        trainable    = sum(p.numel() for p in self.parameters()
-                           if p.requires_grad) / 1e6
-        print(f">>> SuperNetwork ready — {total_params:.1f}M total, "
-              f"{trainable:.1f}M trainable")
-
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
+        self.heads = nn.ModuleList([nn.Linear(info['out_ch'], num_classes) for info in stage_infos[-1]])
 
     def _get_native_in_channels(self, module):
-        """Fallback: inspect first Conv2d or Linear for native input channels."""
         for m in module.modules():
-            if isinstance(m, nn.Conv2d):
-                return m.in_channels, 'CNN'
-            if isinstance(m, nn.Linear):
-                return m.in_features, 'TRANS'
+            if isinstance(m, nn.Conv2d): return m.in_channels, 'CNN'
+            if isinstance(m, nn.Linear): return m.in_features, 'TRANS'
         return 3, 'CNN'
 
     def _run_dummy_pass(self, sub_model, in_ch, in_res, b_type):
-        """
-        Run dummy forward to get output shape.
-        Auto-corrects channel mismatches by reading the expected count
-        from PyTorch's RuntimeError (handles ShuffleNet splits, etc.)
-        """
         for _ in range(8):
             try:
-                if b_type == 'CNN':
-                    test_in = torch.randn(1, in_ch, in_res, in_res)
-                else:
-                    test_in = torch.randn(1, in_res * in_res, in_ch)
-                with torch.no_grad():
-                    out_t = sub_model(test_in)
+                test_in = torch.randn(1, in_ch, in_res, in_res) if b_type == 'CNN' else torch.randn(1, in_res * in_res, in_ch)
+                with torch.no_grad(): out_t = sub_model(test_in)
                 return out_t, in_ch
             except RuntimeError as e:
                 match = re.search(r'to have (\d+) channels, but got (\d+)', str(e))
-                if match:
-                    in_ch = int(match.group(1))
-                else:
-                    raise
-        raise RuntimeError("Could not resolve native input channels after 8 attempts")
+                if match: in_ch = int(match.group(1))
+                else: raise
+        raise RuntimeError("Could not resolve native input channels")
 
     def _get_matrix(self, src_name, dst_name):
-        if not self.matrices:
-            return None
-        return self.matrices.get(f"{src_name}->{dst_name}", None)
+        return self.matrices.get(f"{src_name}->{dst_name}", None) if self.matrices else None
 
     def _extract_submodule(self, block_obj):
         model_name = block_obj.model_name
-        torchvision_models = ['resnet', 'squeezenet', 'densenet', 'shufflenet']
-        if any(x in model_name for x in torchvision_models):
+        if any(x in model_name for x in ['resnet', 'squeezenet', 'densenet', 'shufflenet']):
             import torchvision.models as tvm
-            try:
-                base_model = getattr(tvm, model_name)(weights='DEFAULT')
-            except TypeError:
-                base_model = getattr(tvm, model_name)(pretrained=True)
+            try: base_model = getattr(tvm, model_name)(weights='DEFAULT')
+            except TypeError: base_model = getattr(tvm, model_name)(pretrained=True)
         else:
             import timm
             base_model = timm.create_model(model_name, pretrained=True)
 
-        all_nodes        = MODEL_BLOCKS[model_name]
-        start_idx        = block_obj.node_list[0]
-        end_idx          = block_obj.node_list[-1]
-        input_node_name  = all_nodes[start_idx]
-        output_node_name = all_nodes[end_idx]
-        input_args       = [input_node_name] if start_idx > 0 else []
-        return create_sub_network(base_model, input_args, [output_node_name])
+        all_nodes = MODEL_BLOCKS[model_name]
+        start_idx, end_idx = block_obj.node_list[0], block_obj.node_list[-1]
+        return create_sub_network(base_model, [all_nodes[start_idx]] if start_idx > 0 else [], [all_nodes[end_idx]])
 
-    # ------------------------------------------------------------------ #
-    # Forward
-    # ------------------------------------------------------------------ #
-    
     def forward(self, x, path=None):
         if path is None:
             path = [torch.randint(0, c, (1,)).item() for c in self.choices_per_stage]
 
-        # REMOVED: with torch.set_grad_enabled(not self.freeze_backbone):
-        # By removing the context manager, we ensure PyTorch connects the autograd
-        # graph from Stage(i) to Stitch(i-1), regardless of parameter freeze state.
         out = self.stages[0][path[0]](x)
-
         for i in range(1, self.num_stages):
-            prev_idx = path[i - 1]
-            curr_idx = path[i]
-            out = self.stitches[i - 1][prev_idx][curr_idx](out)
-            out = self.stages[i][curr_idx](out)
+            out = self.stitches[i - 1][path[i - 1]][path[i]](out)
+            out = self.stages[i][path[i]](out)
 
         out = self.global_pool(out)
-        out = self.heads[path[-1]](out)
-        return out
-    # ------------------------------------------------------------------ #
-    # BN Calibration
-    # ------------------------------------------------------------------ #
+        return self.heads[path[-1]](out)
 
-    ###
     @torch.no_grad()
-    def calibrate_bn(self, loader, path, n_batches=50, device='cuda'):
-        """
-        Recalibrate BN running statistics for a specific sub-network path.
-        """
+    def calibrate_bn(self, dataloader, path, n_batches=100, device='cuda'):
+        # FIX: Explicitly enable tracking so moving averages are updated
         self.set_bn_tracking(True)
-        def reset_bn(m):
-            if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
+        self.train()
+        for m in self.modules():
+            if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
                 m.reset_running_stats()
-                m.momentum = None # Force simple average over the calibration batches
-                
-        self.apply(reset_bn)
+                m.momentum = None
 
-        was_training = self.training
-        self.train() # BN layers update buffers natively in train mode despite no_grad()
+        with torch.no_grad():
+            for i, (inputs, _) in enumerate(dataloader):
+                if i >= n_batches: break
+                self(inputs.to(device), path=path)
         
-        # REMOVED conflicting inference_mode context manager
-        for batch_idx, (inputs, _) in enumerate(loader):
-            if batch_idx >= n_batches:
-                break
-            self(inputs.to(device), path=path)
-
-        if not was_training:
-            self.eval()
+        self.set_bn_tracking(False) # Restore validation state
 
     def set_bn_tracking(self, track: bool):
-        """Enable or disable running stats tracking for all BN layers."""
         def _set_tracking(module):
             if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
                 module.track_running_stats = track
         self.apply(_set_tracking)
 
     def set_backbone_requires_grad(self, requires_grad: bool):
-        """Set requires_grad for all parameters inside self.stages (the backbone blocks)."""
-        for param in self.stages.parameters():
-            param.requires_grad = requires_grad
+        for param in self.stages.parameters(): param.requires_grad = requires_grad
         self.freeze_backbone = not requires_grad
- 
- 
+
     def sample_path(self, rng=None):
-        """Sample a random path. Uses isolated RNG if provided."""
-        if rng is not None:
-            return [rng.randint(0, c - 1) for c in self.choices_per_stage]
+        if rng is not None: return [rng.randint(0, c - 1) for c in self.choices_per_stage]
         return [torch.randint(0, c, (1,)).item() for c in self.choices_per_stage]
-
-
-if __name__ == '__main__':
-    pkl_path = "network_plan.pkl"
-    if os.path.exists(pkl_path):
-        net = SuperNetwork(pkl_path, num_classes=10, input_size=32,
-                           stitch_init_mode='ls')
-        x = torch.randn(2, 3, 32, 32)
-        y = net(x)
-        print(f"Output shape: {y.shape}")  # Should be (2, 10)
