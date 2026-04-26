@@ -93,7 +93,7 @@ class StitchLayer(nn.Module):
             layers.append(nn.LeakyReLU(negative_slope=0.1, inplace=True))
             if self.mode == 'CNN-to-TRANS':
                 layers.append(nn.Flatten(2))
-
+        #
         elif self.mode == 'TRANS-to-CNN':
             if out_res is not None:
                 class Unflatten(nn.Module):
@@ -102,13 +102,16 @@ class StitchLayer(nn.Module):
                         self.h, self.w = h, w
                     def forward(self, x):
                         B, L, C = x.shape
+                        expected_L = self.h * self.w
+                        # Strip [CLS] or [DIST] tokens safely (assumes tokens are prepended)
+                        if L > expected_L:
+                            x = x[:, -expected_L:, :]
                         return x.transpose(1, 2).reshape(B, C, self.h, self.w)
                 layers.append(Unflatten(out_res, out_res))
             layers.append(nn.BatchNorm2d(self.in_ch))
             self.conv = nn.Conv2d(self.in_ch, self.out_ch, kernel_size=1, bias=False)
             layers.append(self.conv)
             layers.append(nn.LeakyReLU(negative_slope=0.1, inplace=True))
-
         elif self.mode == 'TRANS-to-TRANS':
             layers.append(nn.LayerNorm(self.in_ch))
             self.conv   = None
@@ -241,10 +244,26 @@ class SuperNetwork(nn.Module):
                     if out_t.dim() == 4:
                         info['out_ch']  = out_t.shape[1]
                         info['out_res'] = out_t.shape[2]
+                    ##
+                    
+                    # Replace the out_t.dim() == 3 block in SuperNetwork.__init__
                     elif out_t.dim() == 3:
                         info['out_ch']  = out_t.shape[2]
-                        info['out_res'] = int(out_t.shape[1] ** 0.5)
-                        info['seq_len'] = out_t.shape[1]
+                        L = out_t.shape[1]
+                        
+                        # Deduce spatial resolution accounting for up to 2 extra tokens
+                        if math.isqrt(L)**2 == L:
+                            res = math.isqrt(L)
+                        elif math.isqrt(L - 1)**2 == L - 1:
+                            res = math.isqrt(L - 1)
+                        elif math.isqrt(L - 2)**2 == L - 2:
+                            res = math.isqrt(L - 2)
+                        else:
+                            res = int(L ** 0.5) # Fallback
+                            
+                        info['out_res'] = res
+                        info['seq_len'] = L
+                    
                     else:
                         raise ValueError(f"Unexpected output dim {out_t.dim()} "
                                          f"from {block_obj.model_name}")
@@ -367,23 +386,20 @@ class SuperNetwork(nn.Module):
         if path is None:
             path = [torch.randint(0, c, (1,)).item() for c in self.choices_per_stage]
 
-        # First stage: use no_grad if backbone is frozen
-        with torch.set_grad_enabled(not self.freeze_backbone):
-            out = self.stages[0][path[0]](x)
+        # REMOVED: with torch.set_grad_enabled(not self.freeze_backbone):
+        # By removing the context manager, we ensure PyTorch connects the autograd
+        # graph from Stage(i) to Stitch(i-1), regardless of parameter freeze state.
+        out = self.stages[0][path[0]](x)
 
         for i in range(1, self.num_stages):
             prev_idx = path[i - 1]
             curr_idx = path[i]
-            # Stitching layers always need gradients → run normally
             out = self.stitches[i - 1][prev_idx][curr_idx](out)
-            # Next stage: no_grad if frozen
-            with torch.set_grad_enabled(not self.freeze_backbone):
-                out = self.stages[i][curr_idx](out)
+            out = self.stages[i][curr_idx](out)
 
         out = self.global_pool(out)
         out = self.heads[path[-1]](out)
         return out
-
     # ------------------------------------------------------------------ #
     # BN Calibration
     # ------------------------------------------------------------------ #
@@ -392,27 +408,27 @@ class SuperNetwork(nn.Module):
     @torch.no_grad()
     def calibrate_bn(self, loader, path, n_batches=50, device='cuda'):
         """
-        Recalibrate BN running statistics for a specific sub‑network path.
-        FIX: Use torch.inference_mode() for safety and disable autocast.
+        Recalibrate BN running statistics for a specific sub-network path.
         """
         self.set_bn_tracking(True)
         def reset_bn(m):
             if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
                 m.reset_running_stats()
+                m.momentum = None # Force simple average over the calibration batches
+                
         self.apply(reset_bn)
 
         was_training = self.training
-        self.train()
-        # FIX: Use inference_mode for faster forward, autocast disabled already
-        with torch.inference_mode(False):   # keep grads off but allow BN stat updates
-            for batch_idx, (inputs, _) in enumerate(loader):
-                if batch_idx >= n_batches:
-                    break
-                self(inputs.to(device), path=path)
+        self.train() # BN layers update buffers natively in train mode despite no_grad()
+        
+        # REMOVED conflicting inference_mode context manager
+        for batch_idx, (inputs, _) in enumerate(loader):
+            if batch_idx >= n_batches:
+                break
+            self(inputs.to(device), path=path)
 
         if not was_training:
             self.eval()
-        # Tracking remains enabled – ready for eval()
 
     def set_bn_tracking(self, track: bool):
         """Enable or disable running stats tracking for all BN layers."""
