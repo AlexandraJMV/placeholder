@@ -1,0 +1,29 @@
+# generate_paths.py
+import json
+import random
+from simple_poc.supernet import SuperNetwork
+
+def main():
+    # 1. Boot blueprint to get choice dimensions
+    blueprint = SuperNetwork("network_plan.pkl", input_size=160).to('cpu')
+    choices = blueprint.choices_per_stage
+    
+    # 2. Enforce Strict Determinism
+    rng = random.Random(42)
+    unique_paths = set()
+    
+    # 3. Sample 30 unique paths
+    while len(unique_paths) < 30:
+        path = tuple(rng.randint(0, c - 1) for c in choices)
+        unique_paths.add(path)
+        
+    paths_list = [list(p) for p in unique_paths]
+    
+    # 4. Serialize to disk
+    with open("eval_paths_universe.json", "w") as f:
+        json.dump(paths_list, f, indent=4)
+        
+    print(f"✅ Successfully serialized {len(paths_list)} paths to eval_paths_universe.json")
+
+if __name__ == "__main__":
+    main()
