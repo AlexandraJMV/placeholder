@@ -49,3 +49,4 @@ reps_imagenette/
 mis_similitudes_2/
 reps_folder_2/
 trained_nets/
+*.zip

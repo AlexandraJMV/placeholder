@@ -11,6 +11,22 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+
+### PATH RESOLUTION FOR IMPORTS (Ensuring Robustness Across Environments) ###
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+third_package_dir = os.path.join(PROJECT_ROOT, 'third_package')
+if third_package_dir not in sys.path:
+    sys.path.insert(0, third_package_dir)
+    
+######
+
+
+
 # Ensure absolute path resolution for imports
 sys.path.insert(0, os.path.join(os.getcwd(), 'third_package'))
 sys.path.append(os.getcwd())
