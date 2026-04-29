@@ -8,7 +8,7 @@ def main():
     global_results = []
     
     for idx in range(expected_batches):
-        file_name = f"batch_{idx}_results.json"
+        file_name = f"batch_{idx}_eval.json"
         if not os.path.exists(file_name):
             print(f"❌ Missing artifact: {file_name}. Cannot compute global Tau.")
             return
