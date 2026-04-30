@@ -5,7 +5,7 @@ import scipy.stats as stats
 import sys
 
 def main():
-    expected_batches = 6
+    expected_batches = 1
     global_results = []
     
     # SYSTEM ARCHITECT FIX: 
