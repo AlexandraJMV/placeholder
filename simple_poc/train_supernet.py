@@ -56,6 +56,11 @@ def parse_args():
     parser.add_argument('--no_amp', action='store_true')
     parser.add_argument('--freeze_backbone', action='store_true')
     parser.add_argument('--eval_candidates', action='store_true')
+    
+    # Extra arg para pponer flag que realice validación solo luego de la época 200
+    # Antes de eso, solo calcular validación cada 10 épocas
+    parser.add_argument('--late_val_start', type=int, default=0, help="Epoch to start full validation. Before this, val is done every 10 epochs.")
+    
     return parser.parse_args()
 
 def generate_fixed_paths(choices_per_stage, num_paths=20, seed=42):
@@ -173,7 +178,15 @@ def main():
         train_loss, train_acc = running_loss / len(trainloader), 100.0 * correct / total
         val_loss, val_acc, val_std, per_path_accs = 0.0, 0.0, 0.0, []
 
-        if epoch == args.epochs - 1 or args.eval_candidates:
+        if args.late_val_start > 0 :
+            if epoch >= args.late_val_start and args.eval_candidates:
+                val_loss, val_acc, val_std, per_path_accs = validate_supernet(
+                    model, trainloader, valloader, criterion, DEVICE, fixed_paths, use_amp=USE_AMP, calibrate=True, calib_batches=100)
+            elif (epoch + 1) % 10 == 0 and args.eval_candidates:
+                val_loss, val_acc, val_std, per_path_accs = validate_supernet(
+                    model, trainloader, valloader, criterion, DEVICE, fixed_paths, use_amp=USE_AMP, calibrate=True, calib_batches=100)
+        
+        elif epoch == args.epochs - 1 or args.eval_candidates:
             val_loss, val_acc, val_std, per_path_accs = validate_supernet(
                 model, trainloader, valloader, criterion, DEVICE, fixed_paths, use_amp=USE_AMP, calibrate=True, calib_batches=100)      
         
