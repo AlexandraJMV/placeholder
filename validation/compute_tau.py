@@ -1,68 +1,96 @@
 # compute_tau.py
-import json
-import os
+"""
+Phase 3: Merge proxy_results.json + all gt_results_*.json files.
+Computes Kendall's tau on the intersection (paths with both scores).
+Reports coverage and warns on partial evaluation.
+"""
+import json, os, glob, argparse
 import scipy.stats as stats
-import sys
 
+def parse_args():
+    p = argparse.ArgumentParser(description="Phase 3: Compute Kendall's Tau")
+    p.add_argument('--proxy_dir',   type=str, default="dery/validation/proxy",
+                   help="Directory containing proxy_results.json")
+    p.add_argument('--gt_dir',      type=str, default="dery/validation/gt",
+                   help="Directory containing gt_results_*.json files")
+    p.add_argument('--min_n',       type=int, default=30)
+    return p.parse_args()
 def main():
-    expected_batches = 6
-    global_results = []
-    
-    # SYSTEM ARCHITECT FIX: 
-    # Check if files exist in Current Working Directory (Root) 
-    # or in the script's parent directory.
-    cwd = os.getcwd()
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # We prioritize the CWD (Kaggle /working/)
-    search_path = cwd 
+    args = parse_args()
 
-    print(f"[Internal] Execution CWD: {cwd}")
-    print(f"[Internal] Script Directory: {script_dir}")
-    
-    for idx in range(expected_batches):
-        file_name = f"batch_{idx}_results.json"
-        full_path = os.path.join(search_path, file_name)
-        
-        # Fallback check
-        if not os.path.exists(full_path):
-            # Try looking one level up if the script was called from inside validation/
-            full_path = os.path.join(os.path.dirname(search_path), file_name)
-            
-        if not os.path.exists(full_path):
-            print(f"❌ Missing artifact: {file_name} at {search_path}. Cannot compute global Tau.")
-            return
-            
-        with open(full_path, "r") as f:
-            batch_data = json.load(f)
-            global_results.extend(batch_data)
-            
-    # Sort by global_idx to ensure consistent vector alignment
-    global_results = sorted(global_results, key=lambda k: k['global_idx'])
-    
-    vector_x_proxy = [res['proxy_acc'] for res in global_results]
-    vector_y_gt = [res['gt_acc'] for res in global_results]
-    
-    if len(vector_x_proxy) < 30:
-        print(f"⚠️ Warning: Found {len(vector_x_proxy)} paths. N=30 required for statistical significance.")
+    # ── Load proxy results ────────────────────────────────────────────────────
+    proxy_path = os.path.join(args.proxy_dir, "proxy_results.json")
+    if not os.path.exists(proxy_path):
+        print(f"❌ Missing: {proxy_path}. Run eval_proxy.py first.")
+        return
 
-    # Statistical computation
-    tau, p_value = stats.kendalltau(vector_x_proxy, vector_y_gt)
-    
-    print("\n" + "="*50)
-    print("FINAL RANKING ANALYSIS (KENDALL'S TAU)")
-    print("="*50)
-    print(f"Total Paths Evaluated: {len(vector_x_proxy)}")
-    print(f"Kendall's Tau (τ):     {tau:.4f}")
-    print(f"P-Value:               {p_value:.4e}")
-    print("="*50)
-    
+    with open(proxy_path) as f:
+        proxy_data = json.load(f)
+    proxy_map = {entry['global_idx']: entry['proxy_acc'] for entry in proxy_data}
+    print(f"[Tau] Proxy results loaded: {len(proxy_map)} paths")
+
+    # ── Load all GT result files ──────────────────────────────────────────────
+    gt_files = sorted(glob.glob(os.path.join(args.gt_dir, "gt_results_*.json")))
+    if not gt_files:
+        print(f"❌ No gt_results_*.json files found in {args.results_dir}. Run eval_gt.py first.")
+        return
+
+    gt_map = {}
+    for gt_file in gt_files:
+        with open(gt_file) as f:
+            for entry in json.load(f):
+                idx = entry['global_idx']
+                if idx in gt_map:
+                    print(f"⚠️  Duplicate global_idx {idx} across GT files — keeping first occurrence")
+                else:
+                    gt_map[idx] = entry['gt_acc']
+
+    print(f"[Tau] GT results loaded: {len(gt_map)} paths across {len(gt_files)} file(s)")
+
+    # ── Compute intersection ──────────────────────────────────────────────────
+    common_indices = sorted(set(proxy_map.keys()) & set(gt_map.keys()))
+    n = len(common_indices)
+
+    print(f"[Tau] Paths with both proxy and GT: {n}")
+    print(f"      Proxy-only: {len(proxy_map) - n} | GT-only: {len(gt_map) - n}")
+
+    if n < args.min_n:
+        print(f"⚠️  Warning: N={n} is below the recommended minimum of {args.min_n}. "
+              f"Results may lack statistical power.")
+
+    if n < 3:
+        print("❌ Fewer than 3 matched paths. Cannot compute tau.")
+        return
+
+    vector_proxy = [proxy_map[i] for i in common_indices]
+    vector_gt    = [gt_map[i]    for i in common_indices]
+
+    # ── Statistical computation ───────────────────────────────────────────────
+    tau, p_value = stats.kendalltau(vector_proxy, vector_gt)
+
+    # Approximate 95% CI for tau (large-sample normal approximation)
+    se_tau = (2 * (2 * n + 5)) / (9 * n * (n - 1))
+    se_tau = (se_tau) ** 0.5
+    ci_low  = tau - 1.96 * se_tau
+    ci_high = tau + 1.96 * se_tau
+
+    print("\n" + "=" * 55)
+    print("FINAL RANKING ANALYSIS — KENDALL'S TAU")
+    print("=" * 55)
+    print(f"  Paths evaluated (N):    {n}")
+    print(f"  Kendall's Tau (τ):      {tau:.4f}")
+    print(f"  95% CI:                 [{ci_low:.4f}, {ci_high:.4f}]")
+    print(f"  P-Value:                {p_value:.4e}")
+    print("=" * 55)
+
     if tau > 0.4 and p_value < 0.05:
         print("✅ SUCCESS: Strong predictive correlation detected.")
-    elif tau > 0.2:
-        print("⚠️ CAUTION: Moderate correlation. Weight sharing is partially effective.")
+    elif tau > 0.2 and p_value < 0.05:
+        print("⚠️  CAUTION: Moderate correlation. Weight sharing partially effective.")
+    elif p_value >= 0.05:
+        print("❌ NOT SIGNIFICANT: Cannot reject null hypothesis of random ranking.")
     else:
-        print("❌ FAILURE: Weak correlation. Sub-networks are not sharing weights effectively.")
+        print("❌ FAILURE: Weak correlation. Weight sharing ineffective.")
 
 if __name__ == "__main__":
     main()
