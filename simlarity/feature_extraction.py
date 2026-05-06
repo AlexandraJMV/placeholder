@@ -308,9 +308,11 @@ class DualGraphModule(fx.GraphModule):
         # NOTE: Only set self.graph if the current graph is not the desired
         # one. This saves us from recompiling the graph where not necessary.
         if mode and not self.training:
-            self.graph = self.train_graph
+            if hasattr(self, 'train_graph'):
+                self.graph = self.train_graph
         elif not mode and self.training:
-            self.graph = self.eval_graph
+            if hasattr(self, 'eval_graph'):
+                self.graph = self.eval_graph
         return super().train(mode=mode)
 
 
