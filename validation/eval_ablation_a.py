@@ -77,24 +77,42 @@ def parse_args():
     return p.parse_args()
 
 
-# ── Parameter groups (no differential LR — single network, no stitches) ──────
+# ── Parameter groups (differential LR — head at lr, backbone at lr*0.1) ──────
+# Head module names by architecture (timm naming convention):
+#   resnet18               → model.fc
+#   efficientnet_b0        → model.classifier
+#   mobilenetv3_small_050  → model.classifier
+HEAD_PARAM_PREFIXES = ('fc.', 'classifier.')
+
 def build_optimizer(model, lr, weight_decay):
     """
-    Single LR for all parameters (no stitching layers → no differential needed).
-    Decay group: weight tensors with dim > 1.
-    No-decay group: bias, BN scale/shift (dim == 1).
+    Differential LR mirroring eval_gt.py protocol:
+        head params  → lr        (same as stitches/head in GT)
+        backbone     → lr * 0.1  (same as backbone blocks in GT)
+    Within each group, bias/BN params get weight_decay=0.0.
+
+    This is required for a fair comparison with stitched subnets (Groups B/C)
+    which use the same differential LR scheme. Using a single LR for Group A
+    caused catastrophic forgetting (val_acc collapsed after epoch 1).
     """
-    decay, no_decay = [], []
+    head_decay,     head_no_decay     = [], []
+    backbone_decay, backbone_no_decay = [], []
+
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if param.dim() == 1 or name.endswith('.bias'):
-            no_decay.append(param)
+        is_head    = any(name.startswith(pfx) for pfx in HEAD_PARAM_PREFIXES)
+        no_decay   = (param.dim() == 1) or name.endswith('.bias')
+        if is_head:
+            (head_no_decay     if no_decay else head_decay).append(param)
         else:
-            decay.append(param)
+            (backbone_no_decay if no_decay else backbone_decay).append(param)
+
     return optim.AdamW([
-        {'params': decay,    'lr': lr, 'weight_decay': weight_decay},
-        {'params': no_decay, 'lr': lr, 'weight_decay': 0.0},
+        {'params': head_decay,       'lr': lr,       'weight_decay': weight_decay},
+        {'params': head_no_decay,    'lr': lr,       'weight_decay': 0.0},
+        {'params': backbone_decay,   'lr': lr * 0.1, 'weight_decay': weight_decay},
+        {'params': backbone_no_decay,'lr': lr * 0.1, 'weight_decay': 0.0},
     ])
 
 
@@ -200,9 +218,10 @@ def train_model(
         epoch_wall = time_module.perf_counter() - t0
         epoch_times.append(epoch_wall)
 
-        train_loss = round(running_loss / len(train_loader), 5)
-        train_acc  = round(100.0 * correct / total, 3)
-        lr_current = round(optimizer.param_groups[0]['lr'], 8)
+        train_loss  = round(running_loss / len(train_loader), 5)
+        train_acc   = round(100.0 * correct / total, 3)
+        lr_head     = round(optimizer.param_groups[0]['lr'], 8)  # head_decay group
+        lr_backbone = round(optimizer.param_groups[2]['lr'], 8)  # backbone_decay group
         val_acc, val_loss = evaluate(model, val_loader, device, use_amp)
 
         improved = val_acc > best_val_acc
@@ -238,13 +257,14 @@ def train_model(
         }, latest_ckpt)
 
         metrics.append({
-            "epoch":      epoch + 1,
-            "train_loss": train_loss,
-            "train_acc":  train_acc,
-            "val_acc":    val_acc,
-            "val_loss":   val_loss,
-            "lr":         lr_current,
-            "epoch_time": round(epoch_wall, 3),
+            "epoch":        epoch + 1,
+            "train_loss":   train_loss,
+            "train_acc":    train_acc,
+            "val_acc":      val_acc,
+            "val_loss":     val_loss,
+            "lr_head":      lr_head,
+            "lr_backbone":  lr_backbone,
+            "epoch_time":   round(epoch_wall, 3),
             "best_val_acc": round(best_val_acc, 4),
         })
 
