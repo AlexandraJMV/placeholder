@@ -67,7 +67,7 @@ def parse_args():
     p.add_argument('--warmup_epochs',  type=int,   default=5,
                    help="Linear warmup epochs before cosine annealing begins")
     p.add_argument('--patience',       type=int,   default=10,
-                   help="Early stopping patience (epochs without val_acc improvement)")
+                   help="Early stopping patience (epochs without val_loss improvement)")
     p.add_argument('--no_amp',         action='store_true')
     return p.parse_args()
 
@@ -157,6 +157,7 @@ def build_scheduler(optimizer, warmup_epochs, total_epochs, eta_min=1e-6):
         end_factor   = 1.0,
         total_iters  = warmup_epochs,
     )
+    
     cosine_epochs = max(total_epochs - warmup_epochs, 1)
     cosine = optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
@@ -236,7 +237,8 @@ def train_gt_subnet(
 
     # ── Resume ───────────────────────────────────────────────────────────────
     start_epoch    = 0
-    best_val_acc   = 0.0
+    best_val_loss  = float('inf') # Inicializado en infinito para minimizar
+    best_val_acc   = 0.0          # Se mantiene para logs
     no_improve_cnt = 0
     existing_metrics = []
 
@@ -248,15 +250,20 @@ def train_gt_subnet(
         scheduler.load_state_dict(ckpt['scheduler'])
         scaler.load_state_dict(ckpt['scaler'])
         start_epoch    = ckpt['epoch']
-        best_val_acc   = ckpt['best_val_acc']
+        
+        # Compatibilidad hacia atrás si el ckpt antiguo solo tenía best_val_acc
+        best_val_loss  = ckpt.get('best_val_loss', float('inf')) 
+        best_val_acc   = ckpt.get('best_val_acc', 0.0)
         no_improve_cnt = ckpt.get('no_improve_cnt', 0)
+        
         if os.path.exists(metrics_path):
             with open(metrics_path) as f:
                 existing_metrics = json.load(f)
         print(f"    [Resume] Continuing from epoch {start_epoch}, "
-              f"best_val_acc={best_val_acc:.2f}%, "
+              f"best_val_loss={best_val_loss:.4f}, "
               f"no_improve_cnt={no_improve_cnt}")
-
+    
+    
     if start_epoch >= epochs:
         print(f"    [Skip] Already completed {start_epoch}/{epochs} epochs.")
         # Reconstruct epoch_times from existing metrics if available
@@ -310,10 +317,11 @@ def train_gt_subnet(
         # Validate every epoch
         val_acc, val_loss = evaluate(model, val_loader, device, use_amp)
 
-        # Best checkpoint
-        improved = val_acc > best_val_acc
+        # Best checkpoint (Evaluado por val_loss)
+        improved = val_loss < best_val_loss
         if improved:
-            best_val_acc   = val_acc
+            best_val_loss  = val_loss
+            best_val_acc   = val_acc # Guardamos el accuracy asociado a este mínimo
             no_improve_cnt = 0
             torch.save({
                 'epoch':          epoch + 1,
@@ -322,6 +330,8 @@ def train_gt_subnet(
                 'scheduler':      scheduler.state_dict(),
                 'scaler':         scaler.state_dict(),
                 'val_acc':        val_acc,
+                'val_loss':       val_loss,
+                'best_val_loss':  best_val_loss,
                 'best_val_acc':   best_val_acc,
                 'no_improve_cnt': no_improve_cnt,
                 'global_idx':     global_idx,
@@ -329,8 +339,8 @@ def train_gt_subnet(
             }, best_ckpt)
             print(f"    🌟 Epoch {epoch+1:3d} | "
                   f"Loss {train_loss:.4f} | TrainAcc {train_acc:.1f}% | "
-                  f"ValAcc {val_acc:.2f}% | ValLoss {val_loss:.4f} | "
-                  f"StitchGNorm {stitch_gnorm:.4f} ← best")
+                  f"ValAcc {val_acc:.2f}% | ValLoss {val_loss:.4f} ← best | "
+                  f"StitchGNorm {stitch_gnorm:.4f}")
         else:
             no_improve_cnt += 1
             print(f"    Epoch {epoch+1:3d} | "
@@ -347,6 +357,8 @@ def train_gt_subnet(
             'scheduler':      scheduler.state_dict(),
             'scaler':         scaler.state_dict(),
             'val_acc':        val_acc,
+            'val_loss':       val_loss,
+            'best_val_loss':  best_val_loss,
             'best_val_acc':   best_val_acc,
             'no_improve_cnt': no_improve_cnt,
             'global_idx':     global_idx,
@@ -376,8 +388,8 @@ def train_gt_subnet(
         if no_improve_cnt >= patience:
             stopped_epoch = epoch + 1
             print(f"    ⏹  Early stopping triggered at epoch {stopped_epoch} "
-                  f"(no improvement for {patience} epochs). "
-                  f"Best val acc: {best_val_acc:.2f}%")
+                  f"(no improvement in val_loss for {patience} epochs). "
+                  f"Best val loss: {best_val_loss:.4f} (Acc: {best_val_acc:.2f}%)")
             break
     else:
         stopped_epoch = epochs
