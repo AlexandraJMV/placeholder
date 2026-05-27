@@ -193,33 +193,32 @@ def train_gt_subnet(
     Validation : every epoch (val_freq=1); both val_acc and val_loss recorded
     Stitch norm: measured after unscale, before clip → raw signal
 
-    # FIX 1 — docstring corregido: el criterio de early stopping es val_loss,
-    #          no val_acc como decía antes.
-    Early stop : breaks if val_loss does not improve for `patience` epochs
-    Checkpoints: best.pth (lowest val_loss), latest.pth (most recent epoch)
-    Curves     : loss_curve.json saved inside ckpt_dir
+    Two decoupled criteria — each answers a different question:
+      Early stop : val_loss does not improve for `patience` epochs
+                   → val_loss is a smooth, continuous signal; better for deciding
+                     *when* to stop than the discrete, noisy val_acc.
+      best.pth   : saved whenever val_acc reaches a new maximum
+                   → gt_acc reported in the summary is the true best accuracy
+                     seen during training, not the accuracy at best-loss epoch.
+                     This is correct for NAS path ranking by accuracy.
 
-    metrics.json / loss_curve.json include two separate accuracy fields:
-      - "best_val_acc"         : val_acc en el epoch de menor val_loss (el que
-                                 se guarda en best.pth). Puede bajar entre épocas
-                                 si un nuevo mínimo de loss tiene acc menor.
-      - "best_val_acc_running" : running maximum de val_acc, siempre no-decreciente.
-                                 Útil para plots de convergencia.
+    Checkpoints: best.pth (highest val_acc), latest.pth (most recent epoch)
+    Curves     : loss_curve.json / metrics.json saved inside ckpt_dir
 
     Returns
     -------
-    best_val_acc  : float  — val_acc at the best-loss checkpoint
+    best_val_acc  : float        — maximum val_acc seen during training
     epoch_times   : list[float]  — wall-clock seconds per epoch
-    stopped_epoch : int    — epoch at which training ended (1-indexed)
-    stopped_by_es : bool   — True iff training ended via early stopping
-                             (FIX 3: flag explícito, evita falso negativo cuando
-                              ES se dispara en el último epoch posible)
+    stopped_epoch : int          — epoch at which training ended (1-indexed)
+    stopped_by_es : bool         — True iff training ended via early stopping
+                                   (explicit flag avoids false negative when ES
+                                    fires on the last possible epoch)
     """
     os.makedirs(ckpt_dir, exist_ok=True)
-    latest_ckpt    = os.path.join(ckpt_dir, 'latest.pth')
-    best_ckpt      = os.path.join(ckpt_dir, 'best.pth')
-    metrics_path   = os.path.join(ckpt_dir, 'metrics.json')
-    curve_path     = os.path.join(ckpt_dir, 'loss_curve.json')
+    latest_ckpt  = os.path.join(ckpt_dir, 'latest.pth')
+    best_ckpt    = os.path.join(ckpt_dir, 'best.pth')
+    metrics_path = os.path.join(ckpt_dir, 'metrics.json')
+    curve_path   = os.path.join(ckpt_dir, 'loss_curve.json')
 
     # ── Parameter groups ─────────────────────────────────────────────────────
     # Separate decay / no-decay for stitches+head and backbone stages.
@@ -249,13 +248,11 @@ def train_gt_subnet(
     scaler    = torch.amp.GradScaler('cuda', enabled=use_amp)
 
     # ── Resume ───────────────────────────────────────────────────────────────
-    start_epoch          = 0
-    best_val_loss        = float('inf')  # criterio de ES y de best.pth
-    best_val_acc         = 0.0           # val_acc en el epoch de menor val_loss
-    # FIX 2 — running maximum de val_acc, independiente del criterio de loss.
-    best_val_acc_running = 0.0
-    no_improve_cnt       = 0
-    existing_metrics     = []
+    start_epoch    = 0
+    best_val_loss  = float('inf')  # controls ES counter only
+    best_val_acc   = 0.0           # running maximum val_acc → gt_acc / best.pth
+    no_improve_cnt = 0
+    existing_metrics = []
 
     if resume and os.path.exists(latest_ckpt):
         print(f"    [Resume] Loading checkpoint: {latest_ckpt}")
@@ -264,44 +261,39 @@ def train_gt_subnet(
         optimizer.load_state_dict(ckpt['optimizer'])
         scheduler.load_state_dict(ckpt['scheduler'])
         scaler.load_state_dict(ckpt['scaler'])
-        start_epoch          = ckpt['epoch']
+        start_epoch    = ckpt['epoch']
+        best_val_loss  = ckpt.get('best_val_loss', float('inf'))
+        no_improve_cnt = ckpt.get('no_improve_cnt', 0)
 
-        # Compatibilidad hacia atrás si el ckpt antiguo solo tenía best_val_acc
-        best_val_loss        = ckpt.get('best_val_loss', float('inf'))
-        best_val_acc         = ckpt.get('best_val_acc', 0.0)
-        # FIX 2 — retrocompatibilidad: si no existe, reconstruir desde metrics
-        best_val_acc_running = ckpt.get('best_val_acc_running', best_val_acc)
-        no_improve_cnt       = ckpt.get('no_improve_cnt', 0)
+        # Backward compat: old checkpoints stored acc-at-best-loss in best_val_acc.
+        # best_val_acc_running (if present) is the true running max — prefer it.
+        best_val_acc = ckpt.get('best_val_acc_running',
+                                ckpt.get('best_val_acc', 0.0))
 
         if os.path.exists(metrics_path):
             with open(metrics_path) as f:
                 existing_metrics = json.load(f)
-            # FIX 2 — si el campo no existía en métricas previas, reconstruirlo
-            if existing_metrics and 'best_val_acc_running' not in existing_metrics[0]:
-                best_val_acc_running = max(
+            # If checkpoint lacked best_val_acc_running, reconstruct from metrics.
+            if 'best_val_acc_running' not in ckpt:
+                best_val_acc = max(
                     m.get('val_acc', 0.0) for m in existing_metrics
                 )
 
         print(f"    [Resume] Continuing from epoch {start_epoch}, "
               f"best_val_loss={best_val_loss:.4f}, "
+              f"best_val_acc={best_val_acc:.2f}%, "
               f"no_improve_cnt={no_improve_cnt}")
 
     if start_epoch >= epochs:
         print(f"    [Skip] Already completed {start_epoch}/{epochs} epochs.")
         epoch_times = [m.get('epoch_time', 0.0) for m in existing_metrics]
-        # FIX 3 — al saltar un run completado no podemos saber si fue ES;
-        #          devolvemos False conservadoramente (el summary original ya
-        #          tiene el valor correcto desde la ejecución original).
         return best_val_acc, epoch_times, start_epoch, False
 
-    metrics     = list(existing_metrics)
-    epoch_times = [m.get('epoch_time', 0.0) for m in existing_metrics]
+    metrics      = list(existing_metrics)
+    epoch_times  = [m.get('epoch_time', 0.0) for m in existing_metrics]
     model.train()
-    stopped_epoch = epochs   # sobreescrito si ES se dispara
-    # FIX 3 — flag booleano explícito; evita el falso negativo cuando ES
-    #          se dispara justo en el último epoch posible (stopped_epoch ==
-    #          epochs haría que stopped_epoch < epochs_gt fuera False).
-    stopped_by_es = False
+    stopped_epoch = epochs  # overwritten if ES fires
+    stopped_by_es = False   # explicit flag — avoids false negative on last epoch
 
     for epoch in range(start_epoch, epochs):
         epoch_start = time_module.perf_counter()
@@ -345,48 +337,53 @@ def train_gt_subnet(
         # Validate every epoch
         val_acc, val_loss = evaluate(model, val_loader, device, use_amp)
 
-        # FIX 2 — running maximum de val_acc: se actualiza siempre,
-        #          independientemente de si val_loss mejoró o no.
-        #          Esto garantiza que "best_val_acc_running" en metrics.json
-        #          sea siempre no-decreciente y útil para plots de convergencia.
-        if val_acc > best_val_acc_running:
-            best_val_acc_running = val_acc
-
-        # Best checkpoint — criterio: val_loss (FIX 1)
-        improved = val_loss < best_val_loss
-        if improved:
-            best_val_loss = val_loss
-            # val_acc asociado al mínimo de val_loss (puede no ser el máximo
-            # histórico de acc; ver best_val_acc_running para ese dato)
-            best_val_acc   = val_acc
-            no_improve_cnt = 0
+        # ── Criterion A: best.pth — driven by val_acc ─────────────────────
+        # Saves the model with the highest accuracy seen so far.
+        # This is what gt_acc reports, and what NAS path ranking uses.
+        improved_acc = val_acc > best_val_acc
+        if improved_acc:
+            best_val_acc = val_acc
             torch.save({
-                'epoch':                epoch + 1,
-                'state_dict':           model.state_dict(),
-                'optimizer':            optimizer.state_dict(),
-                'scheduler':            scheduler.state_dict(),
-                'scaler':               scaler.state_dict(),
-                'val_acc':              val_acc,
-                'val_loss':             val_loss,
-                'best_val_loss':        best_val_loss,
-                'best_val_acc':         best_val_acc,
-                # FIX 2 — persisted in checkpoint for correct resume
-                'best_val_acc_running': best_val_acc_running,
-                'no_improve_cnt':       no_improve_cnt,
-                'global_idx':           global_idx,
-                'path':                 path,
+                'epoch':               epoch + 1,
+                'state_dict':          model.state_dict(),
+                'optimizer':           optimizer.state_dict(),
+                'scheduler':           scheduler.state_dict(),
+                'scaler':              scaler.state_dict(),
+                'val_acc':             val_acc,
+                'val_loss':            val_loss,
+                'best_val_loss':       best_val_loss,
+                'best_val_acc':        best_val_acc,
+                'best_val_acc_running': best_val_acc,  # same value, kept for compat
+                'no_improve_cnt':      no_improve_cnt,
+                'global_idx':          global_idx,
+                'path':                path,
             }, best_ckpt)
-            print(f"    🌟 Epoch {epoch+1:3d} | "
-                  f"Loss {train_loss:.4f} | TrainAcc {train_acc:.1f}% | "
-                  f"ValAcc {val_acc:.2f}% | ValLoss {val_loss:.4f} ← best | "
-                  f"StitchGNorm {stitch_gnorm:.4f}")
+
+        # ── Criterion B: early stopping — driven by val_loss ──────────────
+        # val_loss is smooth and continuous; a better signal for *when* to stop
+        # than the discrete, noisy val_acc.
+        improved_loss = val_loss < best_val_loss
+        if improved_loss:
+            best_val_loss  = val_loss
+            no_improve_cnt = 0
         else:
             no_improve_cnt += 1
+
+        # ── Logging ───────────────────────────────────────────────────────
+        acc_marker  = " ← best acc" if improved_acc  else ""
+        loss_marker = " ← best loss" if improved_loss else ""
+        if improved_acc or improved_loss:
+            print(f"    🌟 Epoch {epoch+1:3d} | "
+                  f"Loss {train_loss:.4f} | TrainAcc {train_acc:.1f}% | "
+                  f"ValAcc {val_acc:.2f}%{acc_marker} | "
+                  f"ValLoss {val_loss:.4f}{loss_marker} | "
+                  f"StitchGNorm {stitch_gnorm:.4f}")
+        else:
             print(f"    Epoch {epoch+1:3d} | "
                   f"Loss {train_loss:.4f} | TrainAcc {train_acc:.1f}% | "
                   f"ValAcc {val_acc:.2f}% | ValLoss {val_loss:.4f} | "
                   f"StitchGNorm {stitch_gnorm:.4f} | "
-                  f"NoImprove {no_improve_cnt}/{patience}")
+                  f"NoImprove(loss) {no_improve_cnt}/{patience}")
 
         # Latest checkpoint (always saved — enables resume)
         torch.save({
@@ -399,8 +396,7 @@ def train_gt_subnet(
             'val_loss':             val_loss,
             'best_val_loss':        best_val_loss,
             'best_val_acc':         best_val_acc,
-            # FIX 2 — persisted in checkpoint for correct resume
-            'best_val_acc_running': best_val_acc_running,
+            'best_val_acc_running': best_val_acc,  # kept for compat
             'no_improve_cnt':       no_improve_cnt,
             'global_idx':           global_idx,
             'path':                 path,
@@ -411,32 +407,31 @@ def train_gt_subnet(
             "epoch":                epoch + 1,
             "train_loss":           train_loss,
             "train_acc":            train_acc,
-            "val_acc":              val_acc,          # always float — val_freq=1
+            "val_acc":              val_acc,
             "val_loss":             val_loss,
             "lr_stitches":          lr_stitches,
             "lr_backbone":          lr_backbone,
             "stitch_gnorm":         stitch_gnorm,
             "epoch_time":           round(epoch_wall, 3),
-            # FIX 2a — val_acc at the best-loss checkpoint (can decrease)
+            # running max val_acc — always non-decreasing, used as gt_acc
             "best_val_acc":         round(best_val_acc, 3),
-            # FIX 2b — running maximum val_acc (always non-decreasing)
-            "best_val_acc_running": round(best_val_acc_running, 3),
+            # best val_loss seen so far — for plotting only
+            "best_val_loss":        round(best_val_loss, 5),
         })
 
-        # Write metrics.json and loss_curve.json atomically after every epoch
+        # Write metrics.json and loss_curve.json after every epoch
         for path_ in (metrics_path, curve_path):
             with open(path_, 'w') as f:
                 json.dump(metrics, f, indent=4)
 
-        # Early stopping check
+        # Early stopping check (val_loss criterion)
         if no_improve_cnt >= patience:
             stopped_epoch = epoch + 1
-            # FIX 3 — flag explícito; la comparación stopped_epoch < epochs_gt
-            #          da False cuando ES se dispara en el último epoch posible.
             stopped_by_es = True
             print(f"    ⏹  Early stopping triggered at epoch {stopped_epoch} "
                   f"(no improvement in val_loss for {patience} epochs). "
-                  f"Best val loss: {best_val_loss:.4f} (Acc: {best_val_acc:.2f}%)")
+                  f"Best val_loss: {best_val_loss:.4f} | "
+                  f"Best val_acc: {best_val_acc:.2f}%")
             break
     else:
         stopped_epoch = epochs
@@ -476,7 +471,8 @@ def main():
     print(f"[GT] LR (stitches)     : {args.lr}  |  LR (backbone): {args.lr * 0.1}")
     print(f"[GT] Weight decay      : {args.weight_decay}")
     print(f"[GT] Warmup epochs     : {args.warmup_epochs}")
-    print(f"[GT] Early stop pat.   : {args.patience}")
+    print(f"[GT] Early stop pat.   : {args.patience}  (criterion: val_loss)")
+    print(f"[GT] Best ckpt crit.   : val_acc (for gt_acc / NAS ranking)")
     print(f"[GT] Checkpoints dir   : {models_dir}/path_{{idx}}/")
     print(f"[GT] Summary output    : {output_path}")
 
@@ -534,7 +530,6 @@ def main():
 
         t_start = time_module.perf_counter()
 
-        # FIX 3 — desempacar el cuarto valor de retorno (stopped_by_es)
         best_val_acc, epoch_times, stopped_epoch, stopped_by_es = train_gt_subnet(
             model          = subnet,
             train_loader   = trainloader,
@@ -556,9 +551,6 @@ def main():
         epoch_arr   = np.array(epoch_times) if epoch_times else np.array([0.0])
         epoch_mean  = round(float(epoch_arr.mean()), 3)
         epoch_std   = round(float(epoch_arr.std()),  3)
-        # FIX 3 — usar el flag booleano explícito en lugar de comparación de índices.
-        #          La comparación anterior (stopped_epoch < args.epochs_gt) daba
-        #          False cuando ES se disparaba justo en el último epoch posible.
         stopped_early = stopped_by_es
 
         print(f"  ✅ Path {global_idx} done.")
@@ -576,7 +568,7 @@ def main():
         summary[global_idx] = {
             "global_idx":    global_idx,
             "path":          path,
-            "gt_acc":        best_val_acc,
+            "gt_acc":        best_val_acc,   # true max val_acc across all epochs
             "epochs_gt":     args.epochs_gt,
             "lr":            args.lr,
             "n_params":      n_params,
