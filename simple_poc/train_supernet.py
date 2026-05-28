@@ -140,6 +140,11 @@ def parse_args():
     # ── resume
     p.add_argument('--resume',         type=str,   default=None,
                    help="Path to latest.pth checkpoint to resume from")
+    
+    # seed 
+    p.add_argument('--seed',           type=int,   default=42,
+                   help="Random seed for reproducibility (default: 42)")
+    
     return p.parse_args()
 
 
@@ -236,7 +241,7 @@ def build_scheduler(optimizer, warmup_epochs, total_epochs, eta_min=1e-6):
 def main():
     import argparse   # imported here to avoid shadowing at module level
     args = parse_args()
-    set_seed(42)
+    set_seed(args.seed)     # Cambiado para aceptar seed
 
     DEVICE  = 'cuda' if torch.cuda.is_available() else 'cpu'
     USE_AMP = (not args.no_amp) and (DEVICE == 'cuda')
@@ -250,7 +255,8 @@ def main():
     # ── Dataset (full — no Subset) ────────────────────────────────────────────
     trainset, valset = get_imagenette(img_size=args.img_size)
     gen = torch.Generator()
-    gen.manual_seed(42)
+    
+    gen.manual_seed(args.seed)
     trainloader = torch.utils.data.DataLoader(
         trainset, batch_size=args.batch_size,
         shuffle=True, generator=gen,
@@ -302,8 +308,8 @@ def main():
 
     # ── Fixed monitoring paths ────────────────────────────────────────────────
     fixed_paths  = generate_fixed_paths(
-        model.choices_per_stage, args.val_paths, seed=42)
-    sampling_rng = random.Random(42)
+        model.choices_per_stage, args.val_paths, seed=args.seed)
+    sampling_rng = random.Random(args.seed)
 
     # ── Resume ────────────────────────────────────────────────────────────────
     start_epoch  = 0
