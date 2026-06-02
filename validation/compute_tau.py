@@ -1,62 +1,89 @@
 # compute_tau.py
 """
-Phase 3: Merge proxy_results.json + all gt_results_*.json files.
+Phase 3: Merge proxy_results_{run_name}.json + gt_results_*_v2.json files.
 Computes Kendall's tau on the intersection (paths with both scores).
-Reports coverage and warns on partial evaluation.
+Persists result to tau_results/{run_name}_tau.json for cross-supernet comparison.
+
+Fixes applied (v2):
+  B1 — proxy_path ahora incluye run_name: proxy_results_{run_name}.json
+  B2 — gt_dir default corregido a dery/validation/gt_v2
+  B3 — NameError corregido: args.results_dir → args.gt_dir
+  B4 — Resultado escrito a disco en tau_results/{run_name}_tau.json
+  B5 — Argumento --run_name añadido para seleccionar qué proxy cargar
+  M1 — min_n default actualizado a 60 (GT v2)
 """
-import json, os, glob, argparse
+import json, os, glob, argparse, time
 import scipy.stats as stats
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Phase 3: Compute Kendall's Tau")
-    p.add_argument('--proxy_dir',   type=str, default="dery/validation/proxy",
-                   help="Directory containing proxy_results.json")
-    p.add_argument('--gt_dir',      type=str, default="dery/validation/gt",
-                   help="Directory containing gt_results_*.json files")
-    p.add_argument('--min_n',       type=int, default=30)
+    p.add_argument('--run_name',    type=str, required=True,
+                   help="Supernet run identifier — selects "
+                        "proxy_results_{run_name}.json from proxy_dir. "
+                        "Same value used in eval_proxy.py. "
+                        "Example: ls_full_lr1e-2_ep500_run2fix")
+    p.add_argument('--proxy_dir',  type=str, default="dery/validation/proxy",
+                   help="Directory containing proxy_results_{run_name}.json")
+    p.add_argument('--gt_dir',     type=str, default="dery/validation/gt_v2",
+                   help="Directory containing gt_results_*_v2.json files")
+    p.add_argument('--output_dir', type=str, default="dery/validation/tau_results",
+                   help="Directory where {run_name}_tau.json will be written")
+    p.add_argument('--min_n',      type=int, default=60,
+                   help="Minimum N for reliable tau estimate (default: 60)")
     return p.parse_args()
+
+
 def main():
     args = parse_args()
+    os.makedirs(args.output_dir, exist_ok=True)
 
-    # ── Load proxy results ────────────────────────────────────────────────────
-    proxy_path = os.path.join(args.proxy_dir, "proxy_results.json")
+    # ── Load proxy results (B1, B5) ───────────────────────────────────────────
+    proxy_path = os.path.join(args.proxy_dir,
+                              f"proxy_results_{args.run_name}.json")
     if not os.path.exists(proxy_path):
-        print(f"❌ Missing: {proxy_path}. Run eval_proxy.py first.")
+        print(f"❌ Missing: {proxy_path}")
+        print(f"   Run eval_proxy.py --run_name {args.run_name} first.")
         return
 
     with open(proxy_path) as f:
         proxy_data = json.load(f)
     proxy_map = {entry['global_idx']: entry['proxy_acc'] for entry in proxy_data}
-    print(f"[Tau] Proxy results loaded: {len(proxy_map)} paths")
+    print(f"[Tau] Proxy results loaded: {len(proxy_map)} paths  ({proxy_path})")
 
-    # ── Load all GT result files ──────────────────────────────────────────────
+    # ── Load GT results (B2, B3) ──────────────────────────────────────────────
     gt_files = sorted(glob.glob(os.path.join(args.gt_dir, "gt_results_*.json")))
     if not gt_files:
-        print(f"❌ No gt_results_*.json files found in {args.results_dir}. Run eval_gt.py first.")
+        # B3: era args.results_dir, corregido a args.gt_dir
+        print(f"❌ No gt_results_*.json files found in {args.gt_dir}.")
+        print(f"   Check --gt_dir or download GT files first.")
         return
 
     gt_map = {}
     for gt_file in gt_files:
         with open(gt_file) as f:
-            for entry in json.load(f):
-                idx = entry['global_idx']
-                if idx in gt_map:
-                    print(f"⚠️  Duplicate global_idx {idx} across GT files — keeping first occurrence")
-                else:
-                    gt_map[idx] = entry['gt_acc']
+            entries = json.load(f)
+        for entry in entries:
+            idx = entry['global_idx']
+            if idx in gt_map:
+                print(f"⚠️  Duplicate global_idx {idx} — keeping first occurrence")
+            else:
+                gt_map[idx] = entry['gt_acc']
 
-    print(f"[Tau] GT results loaded: {len(gt_map)} paths across {len(gt_files)} file(s)")
+    print(f"[Tau] GT results loaded: {len(gt_map)} paths "
+          f"across {len(gt_files)} file(s)")
 
-    # ── Compute intersection ──────────────────────────────────────────────────
+    # ── Intersection ──────────────────────────────────────────────────────────
     common_indices = sorted(set(proxy_map.keys()) & set(gt_map.keys()))
     n = len(common_indices)
 
-    print(f"[Tau] Paths with both proxy and GT: {n}")
-    print(f"      Proxy-only: {len(proxy_map) - n} | GT-only: {len(gt_map) - n}")
+    proxy_only = len(proxy_map) - n
+    gt_only    = len(gt_map)    - n
+    print(f"[Tau] Matched paths: {n}  |  proxy-only: {proxy_only}  |  GT-only: {gt_only}")
 
     if n < args.min_n:
-        print(f"⚠️  Warning: N={n} is below the recommended minimum of {args.min_n}. "
-              f"Results may lack statistical power.")
+        print(f"⚠️  N={n} is below min_n={args.min_n}. "
+              f"CI will be wide (~±{1.96 * ((2*(2*n+5))/(9*n*(n-1)))**0.5:.2f}).")
 
     if n < 3:
         print("❌ Fewer than 3 matched paths. Cannot compute tau.")
@@ -65,32 +92,63 @@ def main():
     vector_proxy = [proxy_map[i] for i in common_indices]
     vector_gt    = [gt_map[i]    for i in common_indices]
 
-    # ── Statistical computation ───────────────────────────────────────────────
+    # ── Kendall's tau ─────────────────────────────────────────────────────────
     tau, p_value = stats.kendalltau(vector_proxy, vector_gt)
 
-    # Approximate 95% CI for tau (large-sample normal approximation)
-    se_tau = (2 * (2 * n + 5)) / (9 * n * (n - 1))
-    se_tau = (se_tau) ** 0.5
+    # 95% CI — large-sample normal approximation (Kendall 1948)
+    # Var(tau) = 2(2n+5) / (9n(n-1))
+    var_tau = (2 * (2 * n + 5)) / (9 * n * (n - 1))
+    se_tau  = var_tau ** 0.5
     ci_low  = tau - 1.96 * se_tau
     ci_high = tau + 1.96 * se_tau
 
-    print("\n" + "=" * 55)
-    print("FINAL RANKING ANALYSIS — KENDALL'S TAU")
-    print("=" * 55)
-    print(f"  Paths evaluated (N):    {n}")
-    print(f"  Kendall's Tau (τ):      {tau:.4f}")
-    print(f"  95% CI:                 [{ci_low:.4f}, {ci_high:.4f}]")
-    print(f"  P-Value:                {p_value:.4e}")
-    print("=" * 55)
+    print("\n" + "=" * 58)
+    print("KENDALL'S TAU — PROXY vs GT RANKING")
+    print("=" * 58)
+    print(f"  Run              : {args.run_name}")
+    print(f"  Paths matched (N): {n}")
+    print(f"  Kendall's τ      : {tau:.4f}")
+    print(f"  95% CI           : [{ci_low:.4f}, {ci_high:.4f}]")
+    print(f"  P-value          : {p_value:.4e}")
+    print("=" * 58)
 
     if tau > 0.4 and p_value < 0.05:
-        print("✅ SUCCESS: Strong predictive correlation detected.")
+        verdict = "SUCCESS: Strong predictive correlation."
+        print(f"✅ {verdict}")
     elif tau > 0.2 and p_value < 0.05:
-        print("⚠️  CAUTION: Moderate correlation. Weight sharing partially effective.")
+        verdict = "CAUTION: Moderate correlation. Weight sharing partially effective."
+        print(f"⚠️  {verdict}")
     elif p_value >= 0.05:
-        print("❌ NOT SIGNIFICANT: Cannot reject null hypothesis of random ranking.")
+        verdict = "NOT SIGNIFICANT: Cannot reject null hypothesis of random ranking."
+        print(f"❌ {verdict}")
     else:
-        print("❌ FAILURE: Weak correlation. Weight sharing ineffective.")
+        verdict = "FAILURE: Weak or negative correlation. Weight sharing ineffective."
+        print(f"❌ {verdict}")
+
+    # ── Persist result (B4) ───────────────────────────────────────────────────
+    result = {
+        "run_name":      args.run_name,
+        "n":             n,
+        "tau":           round(tau,     6),
+        "p_value":       round(p_value, 8),
+        "ci_low":        round(ci_low,  6),
+        "ci_high":       round(ci_high, 6),
+        "se_tau":        round(se_tau,  6),
+        "proxy_paths":   len(proxy_map),
+        "gt_paths":      len(gt_map),
+        "proxy_only":    proxy_only,
+        "gt_only":       gt_only,
+        "verdict":       verdict,
+        "proxy_dir":     args.proxy_dir,
+        "gt_dir":        args.gt_dir,
+        "timestamp":     time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+    output_path = os.path.join(args.output_dir, f"{args.run_name}_tau.json")
+    with open(output_path, 'w') as f:
+        json.dump(result, f, indent=4)
+    print(f"\n💾 Result saved → {output_path}")
+
 
 if __name__ == "__main__":
     main()
