@@ -69,6 +69,10 @@ def parse_args():
     p.add_argument('--patience',       type=int,   default=10,
                    help="Early stopping patience (epochs without val_loss improvement)")
     p.add_argument('--no_amp',         action='store_true')
+    
+    p.add_argument('--seed',           type=int,   default=42,
+                   help="Random seed for reproducibility (default: 42)")
+    
     return p.parse_args()
 
 
@@ -442,7 +446,7 @@ def train_gt_subnet(
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
-    set_seed(42)
+    set_seed(args.seed)
 
     models_dir = os.path.join(args.gt_dir, "models")
     os.makedirs(args.gt_dir,  exist_ok=True)
@@ -485,16 +489,33 @@ def main():
         print(f"[GT] {len(existing_summary)} paths already in summary")
 
     gen = torch.Generator()
-    gen.manual_seed(42)
+    gen.manual_seed(args.seed)
     trainset, valset = get_imagenette(img_size=160)
+    
+    def seed_worker(worker_id):
+        worker_seed = torch.initial_seed() % 2**32
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+    
+    
     trainloader = DataLoader(
-        trainset, batch_size=args.batch_size,
-        shuffle=True, generator=gen,
-        num_workers=4, pin_memory=True,
+        trainset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        generator=gen,
+        worker_init_fn=seed_worker,
+        num_workers=4,
+        pin_memory=True,
     )
+    
     valloader = DataLoader(
-        valset, batch_size=args.batch_size,
-        shuffle=False, num_workers=4, pin_memory=True,
+        valset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        generator=gen,
+        worker_init_fn=seed_worker,
     )
 
     print("[GT] Loading blueprint SuperNetwork on CPU...")
