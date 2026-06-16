@@ -145,19 +145,28 @@ def main():
         print(f"\n[Proxy] Evaluating path {global_idx}/{len(all_paths)-1}: {path}")
         t_path_start = time.perf_counter()
 
+        # 1. Calibración BN: Recalcula μ y σ² usando el trainloader sin alterar gradientes.
         supernet.calibrate_bn(trainloader, path,
                               n_batches=args.calib_batches, device=DEVICE)
+        
+        # 2. Inferencia Determinista: Congela el tracking de BN para validación.
         supernet.eval()
 
         correct, total = 0, 0
+        
+        # 4. Prevención de Fugas: Garantizamos que no exista retención en el grafo.
         with torch.no_grad():
             for inputs, targets in valloader:
                 inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
                 with torch.amp.autocast('cuda', enabled=USE_AMP):
                     outputs = supernet(inputs, path=path)
+                
                 _, predicted = outputs.max(1)
                 correct += predicted.eq(targets).sum().item()
                 total   += targets.size(0)
+                
+                # Liberación iterativa para evitar picos de VRAM
+                del inputs, targets, outputs, predicted
 
         proxy_acc   = round(100.0 * correct / total, 4)
         path_time_s = round(time.perf_counter() - t_path_start, 2)
@@ -177,6 +186,12 @@ def main():
         sorted_entries = sorted(results.values(), key=lambda x: x['global_idx'])
         with open(output_path, 'w') as f:
             json.dump(sorted_entries, f, indent=4)
+            
+        # Limpieza estricta de VRAM al terminar cada ruta
+        if DEVICE == 'cuda':
+            torch.cuda.empty_cache()
+
+
 
     # ── Summary ───────────────────────────────────────────────────────────────
     total_wall = time.perf_counter() - t_total_start
