@@ -280,7 +280,7 @@ class SuperNetwork(nn.Module):
                 if i >= n_batches: break
                 self(inputs.to(device), path=path)
         
-        #self.set_bn_tracking(False) # Restore validation state
+        self.set_bn_tracking(False) # Restore validation state
 
     def set_bn_tracking(self, track: bool):
         def _set_tracking(module):

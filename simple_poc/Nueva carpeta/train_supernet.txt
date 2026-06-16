@@ -45,6 +45,14 @@ Key changes from v1 and why each matters for Kendall's τ:
 8. METRICS: both LR groups recorded per epoch (was only group 0).
    Gradient norm of stitching layers recorded (mirrors eval_gt.py).
 
+Changes required in eval_gt.py (no code delivered here):
+  - Add --supernet_weights argument.
+  - After building blueprint = SuperNetwork(...), load the supernet
+    checkpoint with torch.load and blueprint.load_state_dict() BEFORE
+    constructing SubNetworkExtractor.
+  - This ensures GT fine-tuning starts from supernet weights, not raw
+    ImageNet weights — Hypothesis A, which is the methodologically
+    correct experiment for measuring τ.
 """
 
 import sys, os, random, json, time as time_module
