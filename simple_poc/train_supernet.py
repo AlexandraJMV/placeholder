@@ -137,6 +137,8 @@ def parse_args():
     p.add_argument('--seed',           type=int,   default=42,
                    help="Random seed for reproducibility (default: 42)")
     
+    p.add_argument('--plan_path',      type=str,   default='network_plan.pkl',
+               help="Path to the network plan .pkl file")
     return p.parse_args()
 
 
@@ -261,7 +263,7 @@ def main():
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model = SuperNetwork(
-        plan_path       = "network_plan.pkl",
+        plan_path       = args.plan_path,
         num_classes     = 10,
         input_size      = args.img_size,
         stitch_init_mode= args.init_mode,
