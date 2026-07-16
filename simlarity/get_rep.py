@@ -124,7 +124,7 @@ def main():
     # Configuración de dataset y parámetros de procesamiento
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'imagenet', 'imagenette'])
     # Configuración de ruta, tamaño de batch, directorio de guardado y tamaño de imagen
-    parser.add_argument('--data_path', type=str, default='./data')     # Ruta base para los datos, se ajustará según el dataset seleccionado
+    parser.add_argument('--data_path', type=str, default='data/imagenette2-160/')     # Ruta base para los datos, se ajustará según el dataset seleccionado
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--save_dir', type=str, default='reps_folder')
     parser.add_argument('--img_size', type=int, default=160)            # Tamaño de imagen para modelos que requieren entrada de 224x224, se ajustará según el modelo seleccionado
