@@ -301,7 +301,7 @@ def main():
         weight_decay    = args.weight_decay,
         batch_size      = args.batch_size,
     )
-    periodic_dir = os.path.join(out_dir, run_name)
+    periodic_dir = os.path.join(out_dir, "periodic_ckpts")
     if args.save_periodic_ckpt:
         os.makedirs(periodic_dir, exist_ok=True)
 
@@ -492,7 +492,7 @@ def main():
         torch.save(ckpt, latest_ckpt)
 
         if args.save_periodic_ckpt and ((epoch + 1) % args.ckpt_every_n == 0):
-            periodic_path = os.path.join(periodic_dir, f"epoch_{epoch+1}.pth")
+            periodic_path = os.path.join(periodic_dir, f"epoch_{epoch+1:04d}.pth")
             torch.save(ckpt, periodic_path)
             print(f"  💾 Periodic checkpoint saved: {periodic_path}")
         
