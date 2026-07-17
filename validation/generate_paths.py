@@ -1,7 +1,7 @@
-# generate_paths.py
 import json
 import random
 import os, sys
+import argparse
 from collections import Counter
 
 ### PATH RESOLUTION FOR IMPORTS (Ensuring Robustness Across Environments) ###
@@ -94,27 +94,45 @@ def print_balance_report(paths: list, choices_per_stage: list):
         print(f"   Stage {s}:  {row}")
     print()
 
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Generate a stratified sample of supernet paths.")
+    p.add_argument('--plan_path',  type=str, default='network_plan.pkl',
+                    help="Path to the network plan .pkl file")
+    p.add_argument('--n_paths',    type=int, default=30,
+                    help="Number of paths to sample (e.g. 30, 50, 70)")
+    p.add_argument('--seed',       type=int, default=42,
+                    help="Random seed for reproducibility")
+    p.add_argument('--input_size', type=int, default=160,
+                    help="Input size used to boot the SuperNetwork blueprint")
+    p.add_argument('--output',     type=str, default=None,
+                    help="Output JSON path. Defaults to "
+                         "eval_paths_universe_n{n_paths}_seed{seed}.json")
+    return p.parse_args()
 
 def main():
-    N_PATHS = 30
-    SEED    = 42
+    args = parse_args()
+
+    output_path = args.output or f"eval_paths_universe_n{args.n_paths}_seed{args.seed}.json"
 
     # 1. Boot blueprint to get choice dimensions
-    blueprint = SuperNetwork("network_plan.pkl", input_size=160).to('cpu')
+    blueprint = SuperNetwork(args.plan_path, input_size=args.input_size).to('cpu')
     choices   = blueprint.choices_per_stage
+    print(f"Plan       : {args.plan_path}")
     print(f"Search space: {choices} → {eval('*'.join(map(str, choices)))} total paths")
 
     # 2. Stratified sampling
-    paths_list = stratified_sample_paths(choices, n_paths=N_PATHS, seed=SEED)
+    paths_list = stratified_sample_paths(choices, n_paths=args.n_paths, seed=args.seed)
 
     # 3. Balance diagnostic
     print_balance_report(paths_list, choices)
 
     # 4. Serialize to disk
-    with open("eval_paths_universe.json", "w") as f:
+    with open(output_path, "w") as f:
         json.dump(paths_list, f, indent=4)
 
-    print(f"✅ Successfully serialized {len(paths_list)} stratified paths to eval_paths_universe.json")
+    print(f"✅ Successfully serialized {len(paths_list)} stratified paths to {output_path}")
+
 
 if __name__ == "__main__":
     main()
