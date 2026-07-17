@@ -62,6 +62,43 @@ sys.path.append(os.getcwd())
 from simple_poc.supernet import SuperNetwork
 
 
+
+# ── Run naming ────────────────────────────────────────────────────────────────
+def build_run_name(
+    lr,
+    epochs,
+    init_mode       = "ls",
+    train_only      = False,
+    freeze_backbone = False,
+    weight_decay    = 1e-4,
+    batch_size      = 256,
+    extra_tag       = None,
+):
+    """
+    Construye un nombre de experimento legible que codifica las características
+    principales del run. No incluye 'supernet' — la carpeta HF ya lo implica.
+    Ejemplos:
+        full_lr1e-2_ep300
+        onlystitch_lr1e-2_ep300
+        full_lr1e-2_ep300_wd5e-4
+        onlystitch_lr1e-3_ep300_bs64_tag1
+    """
+    if train_only or freeze_backbone:
+        mode = "onlystitch"
+    else:
+        mode = "full"
+    lr_str = f"{lr:.0e}".replace("e-0", "e-").replace("e+0", "e")
+    name = f"{mode}_lr{lr_str}_ep{epochs}"
+    if abs(weight_decay - 1e-4) > 1e-10:
+        wd_str = f"{weight_decay:.0e}".replace("e-0", "e-")
+        name += f"_wd{wd_str}"
+    if batch_size != 256:
+        name += f"_bs{batch_size}"
+    if extra_tag:
+        name += f"_{extra_tag}"
+    return name
+
+
 # ── Data ──────────────────────────────────────────────────────────────────────
 def get_imagenette(root='data/imagenette2-160', img_size=160):
     train_dir = os.path.join(root, 'train')
@@ -132,6 +169,14 @@ def parse_args():
     # ── resume
     p.add_argument('--resume',         type=str,   default=None,
                    help="Path to latest.pth checkpoint to resume from")
+    
+    # ── periodic checkpointing
+    p.add_argument('--save_periodic_ckpt', action='store_true',
+                   help="If set, additionally save a checkpoint every "
+                        "--ckpt_every_n epochs (kept separately from latest/best).")
+    p.add_argument('--ckpt_every_n',   type=int,   default=10,
+                   help="Epoch interval for periodic checkpoints. "
+                        "Only used if --save_periodic_ckpt is set.")
     
     # seed 
     p.add_argument('--seed',           type=int,   default=42,
@@ -245,6 +290,20 @@ def main():
     latest_ckpt  = os.path.join(out_dir, 'latest.pth')
     best_ckpt    = os.path.join(out_dir, 'best.pth')
     metrics_path = os.path.join(out_dir, f"{args.output_name}.json")
+
+    # ── Periodic checkpoint dir (named via build_run_name) ────────────────────
+    run_name    = build_run_name(
+        lr              = args.lr,
+        epochs          = args.epochs,
+        init_mode       = args.init_mode,
+        train_only      = args.train_only_stitches,
+        freeze_backbone = args.freeze_backbone,
+        weight_decay    = args.weight_decay,
+        batch_size      = args.batch_size,
+    )
+    periodic_dir = os.path.join(out_dir, run_name)
+    if args.save_periodic_ckpt:
+        os.makedirs(periodic_dir, exist_ok=True)
 
     # ── Dataset (full — no Subset) ────────────────────────────────────────────
     trainset, valset = get_imagenette(img_size=args.img_size)
@@ -432,6 +491,11 @@ def main():
         }
         torch.save(ckpt, latest_ckpt)
 
+        if args.save_periodic_ckpt and ((epoch + 1) % args.ckpt_every_n == 0):
+            periodic_path = os.path.join(periodic_dir, f"epoch_{epoch+1}.pth")
+            torch.save(ckpt, periodic_path)
+            print(f"  💾 Periodic checkpoint saved: {periodic_path}")
+        
         if do_val and val_acc > best_val_acc:
             best_val_acc = val_acc
             torch.save(ckpt, best_ckpt)
