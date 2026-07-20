@@ -80,6 +80,9 @@ def parse_args():
                    help="Separate seed for DataLoader shuffle. Fixed at 0 by default so "
                         "all GT runs see the same data order regardless of --seed. "
                         "Set explicitly only if you want to study data-order variance.")
+    # img size arg
+    p.add_argument('--img_size', type=int, default=160)
+    
     
     return p.parse_args()
 
@@ -535,7 +538,7 @@ def main():
     # seed-dependent variable. Pass --data_seed N to study data-order variance.
     data_gen = torch.Generator()
     data_gen.manual_seed(args.data_seed)
-    trainset, valset = get_imagenette(img_size=160)
+    trainset, valset = get_imagenette(img_size=args.img_size)
 
     def seed_worker(worker_id):
         worker_seed = torch.initial_seed() % 2**32
@@ -561,7 +564,7 @@ def main():
     )
 
     print("[GT] Loading blueprint SuperNetwork on CPU...")
-    blueprint = SuperNetwork(args.plan_path, input_size=160).to('cpu')
+    blueprint = SuperNetwork(args.plan_path, input_size=args.img_size).to('cpu')
 
     summary = dict(existing_summary)
 

@@ -161,6 +161,18 @@ def parse_args():
     p.add_argument('--val_freq',       type=int,   default=5,
                    help="Validate every N epochs. Use 1 for every epoch, "
                         "10+ to minimise overhead. Default: 5.")
+    
+    
+    p.add_argument('--val_last_n_epochs', type=int, default=None,
+               help="If set, skip ALL validation until the last N epochs of "
+                    "training (val_freq still applies within that window). "
+                    "Speeds up early training when supernet behavior is "
+                    "predictable and only late-training performance matters. "
+                    "Presence of this argument activates the behavior; "
+                    "omit it to validate throughout as before.")
+    
+    
+    
     p.add_argument('--calib_batches',  type=int,   default=50,
                    help="BN calibration batches for in-training val. "
                         "Final/best checkpoint uses 100 regardless.")
@@ -184,6 +196,9 @@ def parse_args():
     
     p.add_argument('--plan_path',      type=str,   default='network_plan.pkl',
                help="Path to the network plan .pkl file")
+    
+    
+    
     return p.parse_args()
 
 
@@ -436,11 +451,24 @@ def main():
         lr_stitches = round(optimizer.param_groups[0]['lr'], 8)
         lr_backbone = round(optimizer.param_groups[2]['lr'], 8)
 
+        # =============================================================================
+        # CAMBIO 2 — do_val: agregar la condición de ventana
+        # =============================================================================
+        
         # ── Validation (cost-reduced) ─────────────────────────────────────
         val_loss, val_acc, val_std, per_path_accs = 0.0, 0.0, 0.0, []
         is_last  = (epoch == args.epochs - 1)
-        do_val   = (args.eval_candidates and
-                    ((epoch + 1) % args.val_freq == 0 or is_last))
+
+        # Si --val_last_n_epochs está activo, solo se permite validar dentro
+        # de esa ventana final (respetando val_freq dentro de ella).
+        # Si no está activo (None), el comportamiento es idéntico al actual.
+        in_val_window = (
+            args.val_last_n_epochs is None
+            or epoch >= (args.epochs - args.val_last_n_epochs)
+        )
+
+        do_val = (args.eval_candidates and in_val_window and
+                  ((epoch + 1) % args.val_freq == 0 or is_last))
 
         if do_val:
             # Use full calib_batches=100 only at the last epoch;
