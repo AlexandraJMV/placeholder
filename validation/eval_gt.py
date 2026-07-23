@@ -549,6 +549,12 @@ def main():
     data_gen.manual_seed(args.data_seed)
     trainset, valset = get_dataset(args.dataset, root=args.data_root, img_size=args.img_size)
 
+    print(f"[GT] Dataset       : {args.dataset}")
+    print(f"[GT] Data root     : {args.data_root or '(default)'}")
+    print(f"[GT] Train samples : {len(trainset)}")
+    print(f"[GT] Val samples   : {len(valset)}")
+    print(f"[GT] Num classes   : {DATASET_NUM_CLASSES[args.dataset]}")
+    
     def seed_worker(worker_id):
         worker_seed = torch.initial_seed() % 2**32
         np.random.seed(worker_seed)
