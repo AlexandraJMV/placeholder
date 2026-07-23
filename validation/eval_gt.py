@@ -31,7 +31,7 @@ if PROJECT_ROOT not in sys.path: sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'third_package'))
 
 from simple_poc.supernet import SuperNetwork
-from simple_poc.train_supernet import get_imagenette
+from simple_poc.train_supernet import get_dataset, DATASET_NUM_CLASSES  # antes: get_imagenette
 
 
 # ── Reproducibility ───────────────────────────────────────────────────────────
@@ -49,8 +49,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Phase 2: GT training for selected paths")
     p.add_argument('--plan_path',      type=str,   default="network_plan.pkl")
     p.add_argument('--paths_file',     type=str,   default="eval_paths_universe.json")
-    p.add_argument('--gt_dir',         type=str,   default="dery/validation/gt",
-                   help="Root GT directory. Summaries saved here, models in gt_dir/models/")
+    
     # Index control
     p.add_argument('--start_idx',      type=int,   default=None)
     p.add_argument('--end_idx',        type=int,   default=None)
@@ -83,6 +82,13 @@ def parse_args():
     # img size arg
     p.add_argument('--img_size', type=int, default=160)
     
+    # Dataset
+    p.add_argument('--dataset',  type=str, default='imagenette',
+               choices=['imagenette', 'cifar100', 'stl10'])
+    p.add_argument('--data_root', type=str, default=None)
+    p.add_argument('--gt_dir',         type=str,   default=None,
+                   help="Root GT directory. Default: dery/validation/gt/{dataset}. "
+                        "Summaries saved here, models in gt_dir/models/")
     
     return p.parse_args()
 
@@ -488,6 +494,9 @@ def main():
     args = parse_args()
     set_seed(args.seed)
 
+    if args.gt_dir is None:
+        args.gt_dir = f"dery/validation/gt/{args.dataset}"
+    
     models_dir = os.path.join(args.gt_dir, "models")
     os.makedirs(args.gt_dir,  exist_ok=True)
     os.makedirs(models_dir,   exist_ok=True)
@@ -538,7 +547,7 @@ def main():
     # seed-dependent variable. Pass --data_seed N to study data-order variance.
     data_gen = torch.Generator()
     data_gen.manual_seed(args.data_seed)
-    trainset, valset = get_imagenette(img_size=args.img_size)
+    trainset, valset = get_dataset(args.dataset, root=args.data_root, img_size=args.img_size)
 
     def seed_worker(worker_id):
         worker_seed = torch.initial_seed() % 2**32
@@ -564,7 +573,9 @@ def main():
     )
 
     print("[GT] Loading blueprint SuperNetwork on CPU...")
-    blueprint = SuperNetwork(args.plan_path, input_size=args.img_size).to('cpu')
+    blueprint = SuperNetwork(args.plan_path,
+                              num_classes=DATASET_NUM_CLASSES[args.dataset],
+                              input_size=args.img_size).to('cpu')
 
     summary = dict(existing_summary)
 

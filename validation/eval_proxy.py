@@ -28,7 +28,7 @@ if PROJECT_ROOT not in sys.path: sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'third_package'))
 
 from simple_poc.supernet import SuperNetwork
-from simple_poc.train_supernet import get_imagenette
+from simple_poc.train_supernet import get_dataset, DATASET_NUM_CLASSES
 
 
 def set_seed(seed=42):
@@ -78,18 +78,30 @@ def parse_args():
                         "Auto-derived from weights_path if not given. "
                         "Used as the output filename suffix: "
                         "proxy_results_{run_name}.json")
+    
     p.add_argument('--plan_path',     type=str, default="network_plan.pkl")
     p.add_argument('--paths_file',    type=str, default="eval_paths_universe.json")
-    p.add_argument('--proxy_dir',     type=str, default="dery/validation/proxy",
-                   help="Directory where proxy_results_{run_name}.json will be saved")
+    p.add_argument('--dataset',       type=str, default="imagenette",
+                   choices=["imagenette", "cifar100", "stl10"])
+    p.add_argument('--data_root',     type=str, default=None)
+    p.add_argument('--proxy_dir',     type=str, default=None,
+                   help="Directory where proxy_results_{run_name}.json will be saved. "
+                        "Default: dery/validation/proxy/{dataset}")
     p.add_argument('--calib_batches', type=int, default=100)
     p.add_argument('--batch_size',    type=int, default=64)
+    p.add_argument('--start_idx',     type=int, default=None,
+                   help="Evaluate only paths[start_idx:end_idx] instead of the full universe")
+    p.add_argument('--end_idx',       type=int, default=None)
+    p.add_argument('--indices',       type=str, default=None,
+                   help="Comma-separated global indices, e.g. '0,3,7,12'")
     return p.parse_args()
-
-
+    
 def main():
     args = parse_args()
     set_seed(42)
+    
+    if args.proxy_dir is None:
+        args.proxy_dir = f"dery/validation/proxy/{args.dataset}"
 
     # ── P1: run-specific output filename ──────────────────────────────────────
     run_name = args.run_name or infer_run_name(args.weights_path)
@@ -107,14 +119,25 @@ def main():
         all_paths = json.load(f)
     print(f"[Proxy] Loaded {len(all_paths)} paths from {args.paths_file}")
 
+    if args.indices is not None:
+        selected_indices = [int(x) for x in args.indices.split(',')]
+    elif args.start_idx is not None and args.end_idx is not None:
+        selected_indices = list(range(args.start_idx, args.end_idx))
+    else:
+        selected_indices = list(range(len(all_paths)))  # comportamiento actual: todo el universo
+    print(f"[Proxy] Evaluating {len(selected_indices)} path(s): {selected_indices[:5]}"
+          f"{'...' if len(selected_indices) > 5 else ''}")
+
     gen = torch.Generator(); gen.manual_seed(42)
-    trainset, valset = get_imagenette(img_size=160)
+    trainset, valset = get_dataset(args.dataset, root=args.data_root, img_size=160)
     trainloader = DataLoader(trainset, batch_size=args.batch_size,
                              shuffle=True, generator=gen, num_workers=4, pin_memory=True)
     valloader   = DataLoader(valset,   batch_size=args.batch_size,
                              shuffle=False, num_workers=4, pin_memory=True)
 
-    supernet = SuperNetwork(args.plan_path, input_size=160).to(DEVICE)
+    supernet = SuperNetwork(args.plan_path,
+                             num_classes=DATASET_NUM_CLASSES[args.dataset],
+                             input_size=160).to(DEVICE)
 
     # P4: weights_only=False — checkpoints include optimizer/scheduler/scaler
     ckpt = torch.load(args.weights_path, map_location=DEVICE, weights_only=False)
@@ -135,7 +158,8 @@ def main():
     results: dict[str, dict] = dict(existing)
     t_total_start = time.perf_counter()
 
-    for global_idx, path in enumerate(all_paths):
+    for global_idx in selected_indices:
+        path = all_paths[global_idx]
         path_key = str(path)   # e.g. "[0, 1, 2, 0]"
 
         if path_key in results:

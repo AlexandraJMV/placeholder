@@ -98,31 +98,44 @@ def build_run_name(
         name += f"_{extra_tag}"
     return name
 
+DATASET_NUM_CLASSES = {'imagenette': 10, 'cifar100': 100, 'stl10': 10}
 
-# ── Data ──────────────────────────────────────────────────────────────────────
-def get_imagenette(root='data/imagenette2-160', img_size=160):
-    train_dir = os.path.join(root, 'train')
-    val_dir   = os.path.join(root, 'val')
+def get_dataset(name, root=None, img_size=160):
     normalize = transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std =[0.229, 0.224, 0.225],
-    )
+        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225],  # ImageNet stats — se
+    )                                                            # mantienen fijas: los
+                                                                  # anclas están pre-entrenadas
+                                                                  # en ImageNet, no en el
+                                                                  # dataset destino.
     transform_train = transforms.Compose([
         transforms.RandomResizedCrop(img_size),
         transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        normalize,
+        transforms.ToTensor(), normalize,
     ])
     transform_val = transforms.Compose([
         transforms.Resize(int(img_size * 1.14)),
         transforms.CenterCrop(img_size),
-        transforms.ToTensor(),
-        normalize,
+        transforms.ToTensor(), normalize,
     ])
-    trainset = torchvision.datasets.ImageFolder(train_dir, transform_train)
-    valset   = torchvision.datasets.ImageFolder(val_dir,   transform_val)
-    return trainset, valset           # full dataset — no Subset
 
+    if name == 'imagenette':
+        root = root or 'data/imagenette2-160'
+        trainset = torchvision.datasets.ImageFolder(os.path.join(root, 'train'), transform_train)
+        valset   = torchvision.datasets.ImageFolder(os.path.join(root, 'val'),   transform_val)
+    elif name == 'cifar100':
+        root = root or 'data/cifar100'
+        trainset = torchvision.datasets.CIFAR100(root, train=True,  download=True, transform=transform_train)
+        valset   = torchvision.datasets.CIFAR100(root, train=False, download=True, transform=transform_val)
+    elif name == 'stl10':
+        root = root or 'data/stl10'
+        trainset = torchvision.datasets.STL10(root, split='train', download=True, transform=transform_train)
+        valset   = torchvision.datasets.STL10(root, split='test',  download=True, transform=transform_val)
+    else:
+        raise ValueError(f"Unknown dataset: {name}")
+    return trainset, valset
+
+def get_imagenette(root='data/imagenette2-160', img_size=160):  # compat wrapper
+    return get_dataset('imagenette', root=root, img_size=img_size)
 
 # ── Reproducibility ───────────────────────────────────────────────────────────
 def set_seed(seed=42):
@@ -161,6 +174,9 @@ def parse_args():
     p.add_argument('--val_freq',       type=int,   default=5,
                    help="Validate every N epochs. Use 1 for every epoch, "
                         "10+ to minimise overhead. Default: 5.")
+    p.add_argument('--dataset',  type=str, default='imagenette',
+               choices=['imagenette', 'cifar100', 'stl10'])
+    p.add_argument('--data_root', type=str, default=None)
     
     
     p.add_argument('--val_last_n_epochs', type=int, default=None,
@@ -300,7 +316,7 @@ def main():
     DEVICE  = 'cuda' if torch.cuda.is_available() else 'cpu'
     USE_AMP = (not args.no_amp) and (DEVICE == 'cuda')
 
-    out_dir      = os.path.join('simple_poc', args.output_name)
+    out_dir = os.path.join('simple_poc', args.dataset, args.output_name)  # antes: sin args.dataset
     os.makedirs(out_dir, exist_ok=True)
     latest_ckpt  = os.path.join(out_dir, 'latest.pth')
     best_ckpt    = os.path.join(out_dir, 'best.pth')
@@ -321,7 +337,7 @@ def main():
         os.makedirs(periodic_dir, exist_ok=True)
 
     # ── Dataset (full — no Subset) ────────────────────────────────────────────
-    trainset, valset = get_imagenette(img_size=args.img_size)
+    trainset, valset = get_dataset(args.dataset, root=args.data_root, img_size=args.img_size)
     gen = torch.Generator()
     
     gen.manual_seed(args.seed)
@@ -337,11 +353,11 @@ def main():
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model = SuperNetwork(
-        plan_path       = args.plan_path,
-        num_classes     = 10,
-        input_size      = args.img_size,
-        stitch_init_mode= args.init_mode,
-        matrices_path   = args.matrices_path,
+    plan_path        = args.plan_path,
+    num_classes      = DATASET_NUM_CLASSES[args.dataset],   # antes: 10 fijo
+    input_size       = args.img_size,
+    stitch_init_mode = args.init_mode,
+    matrices_path    = args.matrices_path,
     ).to(DEVICE)
 
     if args.train_only_stitches or args.freeze_backbone:
