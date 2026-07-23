@@ -578,6 +578,23 @@ def main():
         pin_memory=True,
     )
 
+    # ── Sanity check: el rango real de labels debe coincidir con el dataset ─────
+    sample_inputs, sample_targets = next(iter(trainloader))
+    label_min = sample_targets.min().item()
+    label_max = sample_targets.max().item()
+    expected_max = DATASET_NUM_CLASSES[args.dataset] - 1
+
+    print(f"[GT] Sanity check  : batch shape={tuple(sample_inputs.shape)} | "
+        f"label range=[{label_min}, {label_max}] | expected_max={expected_max}")
+
+    if label_max > expected_max:
+        raise ValueError(
+            f"[GT] Label {label_max} excede el máximo esperado ({expected_max}) "
+            f"para dataset='{args.dataset}'. El DataLoader está entregando labels "
+            f"que no corresponden a este dataset — abortando antes de entrenar."
+        )
+
+    
     print("[GT] Loading blueprint SuperNetwork on CPU...")
     blueprint = SuperNetwork(args.plan_path,
                               num_classes=DATASET_NUM_CLASSES[args.dataset],
