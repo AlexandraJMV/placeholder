@@ -124,8 +124,9 @@ def get_dataset(name, root=None, img_size=160):
         valset   = torchvision.datasets.ImageFolder(os.path.join(root, 'val'),   transform_val)
     elif name == 'cifar100':
         root = root or 'data/cifar100'
-        trainset = torchvision.datasets.CIFAR100(root, train=True,  download=True, transform=transform_train)
-        valset   = torchvision.datasets.CIFAR100(root, train=False, download=True, transform=transform_val)
+        trainset = torchvision.datasets.ImageFolder(os.path.join(root, 'train'), transform_train)
+        valset   = torchvision.datasets.ImageFolder(os.path.join(root, 'test'),  transform_val)
+        
     elif name == 'stl10':
         root = root or 'data/stl10'
         trainset = torchvision.datasets.STL10(root, split='train', download=True, transform=transform_train)
