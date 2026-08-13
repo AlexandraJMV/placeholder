@@ -84,7 +84,7 @@ def parse_args():
     
     # Dataset
     p.add_argument('--dataset',  type=str, default='imagenette',
-               choices=['imagenette', 'cifar100', 'stl10'])
+               choices=['imagenette', 'cifar100', 'stl10', 'eurosat'])
     p.add_argument('--data_root', type=str, default=None)
     p.add_argument('--gt_dir',         type=str,   default=None,
                    help="Root GT directory. Default: dery/validation/gt/{dataset}. "

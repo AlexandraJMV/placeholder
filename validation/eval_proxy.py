@@ -82,7 +82,7 @@ def parse_args():
     p.add_argument('--plan_path',     type=str, default="network_plan.pkl")
     p.add_argument('--paths_file',    type=str, default="eval_paths_universe.json")
     p.add_argument('--dataset',       type=str, default="imagenette",
-                   choices=["imagenette", "cifar100", "stl10"])
+                   choices=["imagenette", "cifar100", "stl10", 'eurosat'])
     p.add_argument('--data_root',     type=str, default=None)
     p.add_argument('--proxy_dir',     type=str, default=None,
                    help="Directory where proxy_results_{run_name}.json will be saved. "

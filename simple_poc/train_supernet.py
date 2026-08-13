@@ -98,15 +98,13 @@ def build_run_name(
         name += f"_{extra_tag}"
     return name
 
-DATASET_NUM_CLASSES = {'imagenette': 10, 'cifar100': 100, 'stl10': 10}
+
+DATASET_NUM_CLASSES = {'imagenette': 10, 'cifar100': 100, 'stl10': 10, 'eurosat': 10}
 
 def get_dataset(name, root=None, img_size=160):
     normalize = transforms.Normalize(
-        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225],  # ImageNet stats — se
-    )                                                            # mantienen fijas: los
-                                                                  # anclas están pre-entrenadas
-                                                                  # en ImageNet, no en el
-                                                                  # dataset destino.
+        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225],
+    )
     transform_train = transforms.Compose([
         transforms.RandomResizedCrop(img_size),
         transforms.RandomHorizontalFlip(),
@@ -126,11 +124,27 @@ def get_dataset(name, root=None, img_size=160):
         root = root or 'data/cifar100'
         trainset = torchvision.datasets.ImageFolder(os.path.join(root, 'train'), transform_train)
         valset   = torchvision.datasets.ImageFolder(os.path.join(root, 'test'),  transform_val)
-        
     elif name == 'stl10':
         root = root or 'data/stl10'
         trainset = torchvision.datasets.STL10(root, split='train', download=True, transform=transform_train)
         valset   = torchvision.datasets.STL10(root, split='test',  download=True, transform=transform_val)
+    elif name == 'eurosat':
+        # EuroSAT no trae split train/test oficial en torchvision — es un solo
+        # folder de 27k imágenes. Hacemos un split reproducible 80/20 con
+        # torch.utils.data.random_split (seed fija para que train/val no
+        # cambien entre sesiones de Kaggle ni entre runs).
+        root = root or 'data/eurosat'
+        full_train = torchvision.datasets.EuroSAT(root, download=True, transform=transform_train)
+        full_val   = torchvision.datasets.EuroSAT(root, download=True, transform=transform_val)
+        n_total   = len(full_train)
+        n_val     = int(0.2 * n_total)
+        n_train   = n_total - n_val
+        gen = torch.Generator().manual_seed(42)
+        train_idx, val_idx = torch.utils.data.random_split(
+            range(n_total), [n_train, n_val], generator=gen
+        )
+        trainset = torch.utils.data.Subset(full_train, train_idx.indices)
+        valset   = torch.utils.data.Subset(full_val,   val_idx.indices)
     else:
         raise ValueError(f"Unknown dataset: {name}")
     return trainset, valset
@@ -176,7 +190,7 @@ def parse_args():
                    help="Validate every N epochs. Use 1 for every epoch, "
                         "10+ to minimise overhead. Default: 5.")
     p.add_argument('--dataset',  type=str, default='imagenette',
-               choices=['imagenette', 'cifar100', 'stl10'])
+               choices=['imagenette', 'cifar100', 'stl10', 'eurosat'])
     p.add_argument('--data_root', type=str, default=None)
     
     
